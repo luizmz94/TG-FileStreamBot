@@ -21,6 +21,7 @@ type Cache struct {
 
 func InitCache(log *zap.Logger) {
 	log = log.Named("cache")
+	// Register all types that will be cached via gob encoding
 	gob.Register(types.File{})
 	gob.Register(tg.InputDocumentFileLocation{})
 	gob.Register(tg.InputPhotoFileLocation{})
