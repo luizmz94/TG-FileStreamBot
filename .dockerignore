@@ -1,0 +1,51 @@
+# Environment files (IMPORTANTE: não incluir configurações sensíveis)
+fsb.env
+.env
+*.env
+.env.*
+
+# Session files
+*.session
+*.session-journal
+sessions/
+
+# Git files
+.git
+.gitignore
+.github
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.test
+coverage.txt
+*.out
+
+# Logs
+logs/
+*.log
+
+# Documentation (opcional, mas reduz tamanho da imagem)
+README.md
+LICENSE
+*.md
+
+# Go workspace
+go.work
+go.work.sum
+
+# Temporary files
+tmp/
+temp/
