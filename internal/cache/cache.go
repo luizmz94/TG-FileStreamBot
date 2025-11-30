@@ -36,7 +36,7 @@ func GetCache() *Cache {
 func (c *Cache) Get(key string, value *types.File) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	data, err := cache.cache.Get([]byte(key))
+	data, err := c.cache.Get([]byte(key))
 	if err != nil {
 		return err
 	}
@@ -57,13 +57,13 @@ func (c *Cache) Set(key string, value *types.File, expireSeconds int) error {
 	if err != nil {
 		return err
 	}
-	cache.cache.Set([]byte(key), buf.Bytes(), expireSeconds)
+	c.cache.Set([]byte(key), buf.Bytes(), expireSeconds)
 	return nil
 }
 
 func (c *Cache) Delete(key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cache.cache.Del([]byte(key))
+	c.cache.Del([]byte(key))
 	return nil
 }
