@@ -49,8 +49,8 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		logger.Info("Direct stream request", 
-			zap.Int("messageID", messageID), 
+		logger.Info("Direct stream request",
+			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
 
 		// Get a worker to handle the request
@@ -59,11 +59,11 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 		// Fetch file from the configured media channel
 		file, err := utils.FileFromMessageAndChannel(ctx, worker.Client, config.ValueOf.MediaChannelID, messageID)
 		if err != nil {
-			logger.Error("Failed to get file from channel", 
-				zap.Int("messageID", messageID), 
-				zap.Int64("channelID", config.ValueOf.MediaChannelID), 
+			logger.Error("Failed to get file from channel",
+				zap.Int("messageID", messageID),
+				zap.Int64("channelID", config.ValueOf.MediaChannelID),
 				zap.Error(err))
-			
+
 			// Check if it's a "not found" type of error
 			if err.Error() == "message not found in channel" || err.Error() == "message was deleted or is not accessible" {
 				ctx.JSON(http.StatusNotFound, gin.H{
@@ -71,7 +71,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				})
 				return
 			}
-			
+
 			// Other errors are likely Telegram API issues
 			ctx.JSON(http.StatusBadGateway, gin.H{
 				"error": "failed to fetch file from Telegram",
@@ -130,9 +130,9 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			start = ranges[0].Start
 			end = ranges[0].End
 			ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
-			logger.Info("Content-Range", 
-				zap.Int64("start", start), 
-				zap.Int64("end", end), 
+			logger.Info("Content-Range",
+				zap.Int64("start", start),
+				zap.Int64("end", end),
 				zap.Int64("fileSize", file.FileSize))
 			w.WriteHeader(http.StatusPartialContent)
 		}
@@ -160,34 +160,34 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 		if r.Method != "HEAD" {
 			lr, err := utils.NewTelegramReader(ctx, worker.Client, file.Location, start, end, contentLength)
 			if err != nil {
-				logger.Error("Failed to create Telegram reader", 
-					zap.Int("messageID", messageID), 
+				logger.Error("Failed to create Telegram reader",
+					zap.Int("messageID", messageID),
 					zap.Error(err))
 				return
 			}
-			
+
 			bytesWritten, err := io.CopyN(w, lr, contentLength)
 			if err != nil {
 				// Check if the error is due to client disconnection
 				if ctx.Request.Context().Err() != nil {
-					logger.Warn("Client disconnected during stream", 
+					logger.Warn("Client disconnected during stream",
 						zap.Int("messageID", messageID),
 						zap.Int64("bytesWritten", bytesWritten),
 						zap.Int64("expectedBytes", contentLength),
 						zap.Error(ctx.Request.Context().Err()))
 					return
 				}
-				
-				logger.Error("Error while copying stream", 
+
+				logger.Error("Error while copying stream",
 					zap.Int("messageID", messageID),
 					zap.Int64("bytesWritten", bytesWritten),
 					zap.Int64("expectedBytes", contentLength),
 					zap.Error(err))
 				return
 			}
-			
-			logger.Info("Direct stream completed successfully", 
-				zap.Int("messageID", messageID), 
+
+			logger.Info("Direct stream completed successfully",
+				zap.Int("messageID", messageID),
 				zap.String("filename", file.FileName),
 				zap.Int64("bytesStreamed", bytesWritten))
 		}
