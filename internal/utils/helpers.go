@@ -126,8 +126,66 @@ func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID in
 	return file, nil
 }
 
+// FileFromMessageAndChannel fetches a file from a specific channel and message ID
+// This function is designed for direct streaming without using the internal hash/DB system
+// It retrieves the message from the specified channel and extracts the file information
+func FileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*types.File, error) {
+	key := fmt.Sprintf("file:%d:%d:%d", channelID, messageID, client.Self.ID)
+	log := Logger.Named("GetMessageMediaFromChannel")
+	var cachedMedia types.File
+	err := cache.GetCache().Get(key, &cachedMedia)
+	if err == nil {
+		log.Debug("Using cached media message properties", zap.Int64("channelID", channelID), zap.Int("messageID", messageID), zap.Int64("clientID", client.Self.ID))
+		return &cachedMedia, nil
+	}
+	log.Debug("Fetching file properties from channel and message ID", zap.Int64("channelID", channelID), zap.Int("messageID", messageID), zap.Int64("clientID", client.Self.ID))
+	
+	inputMessageID := tg.InputMessageClass(&tg.InputMessageID{ID: messageID})
+	channel, err := GetChannelPeer(ctx, client.API(), client.PeerStorage, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel peer: %w", err)
+	}
+	
+	messageRequest := tg.ChannelsGetMessagesRequest{Channel: channel, ID: []tg.InputMessageClass{inputMessageID}}
+	res, err := client.API().ChannelsGetMessages(ctx, &messageRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get message from channel: %w", err)
+	}
+	
+	messages := res.(*tg.MessagesChannelMessages)
+	if len(messages.Messages) == 0 {
+		return nil, fmt.Errorf("message not found in channel")
+	}
+	
+	message, ok := messages.Messages[0].(*tg.Message)
+	if !ok {
+		return nil, fmt.Errorf("message was deleted or is not accessible")
+	}
+	
+	file, err := FileFromMedia(message.Media)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract file from message: %w", err)
+	}
+	
+	err = cache.GetCache().Set(
+		key,
+		file,
+		3600,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
 func GetLogChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage) (*tg.InputChannel, error) {
-	cachedInputPeer := peerStorage.GetInputPeerById(config.ValueOf.LogChannelID)
+	return GetChannelPeer(ctx, api, peerStorage, config.ValueOf.LogChannelID)
+}
+
+// GetChannelPeer gets an InputChannel for any given channel ID
+// This is a generic version of GetLogChannelPeer that works with any channel
+func GetChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage, channelID int64) (*tg.InputChannel, error) {
+	cachedInputPeer := peerStorage.GetInputPeerById(channelID)
 
 	switch peer := cachedInputPeer.(type) {
 	case *tg.InputPeerEmpty:
@@ -141,7 +199,7 @@ func GetLogChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage
 		return nil, errors.New("unexpected type of input peer")
 	}
 	inputChannel := &tg.InputChannel{
-		ChannelID: config.ValueOf.LogChannelID,
+		ChannelID: channelID,
 	}
 	channels, err := api.ChannelsGetChannels(ctx, []tg.InputChannelClass{inputChannel})
 	if err != nil {

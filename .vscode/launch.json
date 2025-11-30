@@ -10,9 +10,11 @@
             "request": "launch",
             "mode": "auto",
             "program": "./cmd/fsb/",
+            "cwd": "${workspaceFolder}",
             "args": [
                 "run"
-            ]
+            ],
+            "envFile": "${workspaceFolder}/fsb.env"
         },
         {
             "name": "Generate Session",

@@ -204,6 +204,8 @@ Before running the bot, you will need to set up the following mandatory variable
 ### Optional Vars
 In addition to the mandatory variables, you can also set the following optional variables:
 
+- `MEDIA_CHANNEL_ID` : **(New Feature)** This is the channel ID where your media files are already stored. When set, you can use the `/direct/:message_id` route to stream files directly from this channel without needing hash validation or the internal database. To obtain a channel ID, follow the same process as `LOG_CHANNEL`. Example: `MEDIA_CHANNEL_ID=2625729812` (default: `null`)
+
 - `PORT` : This sets the port that your webapp will listen to. The default value is 8080.
 
 - `HOST` :  A Fully Qualified Domain Name if present or use your server IP. (eg. `https://example.com` or `http://14.1.154.2:8080`)
@@ -215,6 +217,37 @@ In addition to the mandatory variables, you can also set the following optional 
 - `USER_SESSION` : A pyrogram session string for a user bot. Used for auto adding the bots to `LOG_CHANNEL`. (default: `null`)
 
 - `ALLOWED_USERS` : A list of user IDs separated by comma (`,`). If this is set, only the users in this list will be able to use the bot. (default: `null`)
+
+<hr>
+
+### Direct Streaming from Media Channel
+
+> [!NOTE]
+> **New Feature**: Direct streaming allows you to stream files from a pre-configured media channel using only the message ID, bypassing the hash validation and internal database system.
+
+If you have a channel where your media files are already stored and you know the message IDs, you can use the direct streaming feature:
+
+1. **Set up the media channel**: Add the `MEDIA_CHANNEL_ID` variable to your `fsb.env` file with your channel ID:
+   ```sh
+   MEDIA_CHANNEL_ID=2625729812
+   ```
+
+2. **Stream files directly**: Use the `/direct/:message_id` endpoint to stream files:
+   ```
+   GET http://your-server:8080/direct/12345
+   ```
+   Where `12345` is the message ID in your media channel.
+
+3. **Optional download parameter**: Add `?d=true` to force download instead of inline viewing:
+   ```
+   GET http://your-server:8080/direct/12345?d=true
+   ```
+
+**Important Notes:**
+- The `/direct/:message_id` route will only work if `MEDIA_CHANNEL_ID` is configured.
+- The bot must have access to the media channel.
+- The message must exist and contain media (document, video, photo, etc.).
+- This route does NOT require hash validation, making it simpler for scenarios where you control both the media storage and the streaming service.
 
 <hr>
 
