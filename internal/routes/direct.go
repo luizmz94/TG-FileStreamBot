@@ -158,14 +158,38 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 
 		// Stream the file content
 		if r.Method != "HEAD" {
-			lr, _ := utils.NewTelegramReader(ctx, worker.Client, file.Location, start, end, contentLength)
-			if _, err := io.CopyN(w, lr, contentLength); err != nil {
-				logger.Error("Error while copying stream", zap.Error(err))
+			lr, err := utils.NewTelegramReader(ctx, worker.Client, file.Location, start, end, contentLength)
+			if err != nil {
+				logger.Error("Failed to create Telegram reader", 
+					zap.Int("messageID", messageID), 
+					zap.Error(err))
+				return
 			}
+			
+			bytesWritten, err := io.CopyN(w, lr, contentLength)
+			if err != nil {
+				// Check if the error is due to client disconnection
+				if ctx.Request.Context().Err() != nil {
+					logger.Warn("Client disconnected during stream", 
+						zap.Int("messageID", messageID),
+						zap.Int64("bytesWritten", bytesWritten),
+						zap.Int64("expectedBytes", contentLength),
+						zap.Error(ctx.Request.Context().Err()))
+					return
+				}
+				
+				logger.Error("Error while copying stream", 
+					zap.Int("messageID", messageID),
+					zap.Int64("bytesWritten", bytesWritten),
+					zap.Int64("expectedBytes", contentLength),
+					zap.Error(err))
+				return
+			}
+			
+			logger.Info("Direct stream completed successfully", 
+				zap.Int("messageID", messageID), 
+				zap.String("filename", file.FileName),
+				zap.Int64("bytesStreamed", bytesWritten))
 		}
-
-		logger.Info("Direct stream completed successfully", 
-			zap.Int("messageID", messageID), 
-			zap.String("filename", file.FileName))
 	}
 }

@@ -121,7 +121,7 @@ func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID in
 		3600,
 	)
 	if err != nil {
-		return nil, err
+		log.Warn("Failed to cache file metadata (continuing without cache)", zap.Error(err))
 	}
 	return file, nil
 }
@@ -195,8 +195,8 @@ func FileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, ch
 		3600,
 	)
 	if err != nil {
-		log.Error("Failed to cache file metadata", zap.Error(err))
-		return nil, err
+		// Log warning but don't fail the request if caching fails
+		log.Warn("Failed to cache file metadata (continuing without cache)", zap.Error(err))
 	}
 	return file, nil
 }

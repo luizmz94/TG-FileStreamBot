@@ -93,14 +93,18 @@ func (r *telegramReader) chunk(offset int64, limit int64) ([]byte, error) {
 	res, err := r.client.API().UploadGetFile(r.ctx, req)
 
 	if err != nil {
-		return nil, err
+		r.log.Error("Failed to fetch chunk from Telegram",
+			zap.Int64("offset", offset),
+			zap.Int64("limit", limit),
+			zap.Error(err))
+		return nil, fmt.Errorf("telegram API error at offset %d: %w", offset, err)
 	}
 
 	switch result := res.(type) {
 	case *tg.UploadFile:
 		return result.Bytes, nil
 	default:
-		return nil, fmt.Errorf("unexpected type %T", r)
+		return nil, fmt.Errorf("unexpected response type %T", result)
 	}
 }
 
@@ -121,7 +125,12 @@ func (r *telegramReader) partStream() func() ([]byte, error) {
 		}
 		res, err := r.chunk(offset, r.chunkSize)
 		if err != nil {
-			return nil, err
+			r.log.Error("Failed to read chunk",
+				zap.Int("currentPart", currentPart),
+				zap.Int("partCount", partCount),
+				zap.Int64("offset", offset),
+				zap.Error(err))
+			return nil, fmt.Errorf("failed to read part %d/%d: %w", currentPart, partCount, err)
 		}
 		if len(res) == 0 {
 			return res, nil
