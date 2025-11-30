@@ -42,6 +42,7 @@ type config struct {
 	ApiHash        string       `envconfig:"API_HASH" required:"true"`
 	BotToken       string       `envconfig:"BOT_TOKEN" required:"true"`
 	LogChannelID   int64        `envconfig:"LOG_CHANNEL" required:"true"`
+	MediaChannelID int64        `envconfig:"MEDIA_CHANNEL_ID"`
 	Dev            bool         `envconfig:"DEV" default:"false"`
 	Port           int          `envconfig:"PORT" default:"8080"`
 	Host           string       `envconfig:"HOST" default:""`
@@ -177,6 +178,13 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	defer log.Info("Loaded config")
 	ValueOf.setupEnvVars(log, cmd)
 	ValueOf.LogChannelID = int64(stripInt(log, int(ValueOf.LogChannelID)))
+	// Process MEDIA_CHANNEL_ID: convert positive channel ID to the format Telegram expects
+	if ValueOf.MediaChannelID != 0 {
+		ValueOf.MediaChannelID = int64(stripInt(log, int(ValueOf.MediaChannelID)))
+		log.Sugar().Infof("MEDIA_CHANNEL_ID configured: %d", ValueOf.MediaChannelID)
+	} else {
+		log.Sugar().Warn("MEDIA_CHANNEL_ID not set. The /direct/:message_id route will not work.")
+	}
 	if ValueOf.HashLength == 0 {
 		log.Sugar().Info("HASH_LENGTH can't be 0, defaulting to 6")
 		ValueOf.HashLength = 6
