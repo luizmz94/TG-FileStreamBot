@@ -31,3 +31,5 @@ dist/
 # logs folder
 logs/
 *.log
+thumbnails_teste/
+cmd/fsb/__debug_*
