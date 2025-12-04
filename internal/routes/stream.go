@@ -3,6 +3,7 @@ package routes
 import (
 	"EverythingSuckz/fsb/internal/bot"
 	"EverythingSuckz/fsb/internal/utils"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,7 +43,11 @@ func getStreamRoute(ctx *gin.Context) {
 
 	worker := bot.GetNextWorker()
 
-	file, err := utils.FileFromMessage(ctx, worker.Client, messageID)
+	// Create a background context for Telegram API calls that won't be cancelled
+	// when the HTTP client disconnects. This prevents "context canceled" errors.
+	bgCtx := context.Background()
+
+	file, err := utils.FileFromMessage(bgCtx, worker.Client, messageID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -61,7 +66,7 @@ func getStreamRoute(ctx *gin.Context) {
 
 	// for photo messages
 	if file.FileSize == 0 {
-		res, err := worker.Client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+		res, err := worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
 			Location: file.Location,
 			Offset:   0,
 			Limit:    1024 * 1024,
@@ -123,7 +128,7 @@ func getStreamRoute(ctx *gin.Context) {
 	ctx.Header("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, file.FileName))
 
 	if r.Method != "HEAD" {
-		lr, _ := utils.NewTelegramReader(ctx, worker.Client, file.Location, start, end, contentLength)
+		lr, _ := utils.NewTelegramReader(bgCtx, worker.Client, file.Location, start, end, contentLength)
 		if _, err := io.CopyN(w, lr, contentLength); err != nil {
 			log.Error("Error while copying stream", zap.Error(err))
 		}

@@ -33,3 +33,5 @@ logs/
 *.log
 thumbnails_teste/
 cmd/fsb/__debug_*
+thumbnails/
+fsb
