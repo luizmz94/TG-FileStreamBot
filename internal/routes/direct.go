@@ -4,6 +4,7 @@ import (
 	"EverythingSuckz/fsb/config"
 	"EverythingSuckz/fsb/internal/bot"
 	"EverythingSuckz/fsb/internal/utils"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,8 +57,13 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 		// Get a worker to handle the request
 		worker := bot.GetNextWorker()
 
+		// Create a background context for Telegram API calls that won't be cancelled
+		// when the HTTP client disconnects. This prevents "context canceled" errors
+		// during file streaming.
+		bgCtx := context.Background()
+
 		// Fetch file from the configured media channel
-		file, err := utils.FileFromMessageAndChannel(ctx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+		file, err := utils.FileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
 		if err != nil {
 			logger.Error("Failed to get file from channel",
 				zap.Int("messageID", messageID),
@@ -81,7 +87,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 
 		// Handle photos (which have FileSize 0)
 		if file.FileSize == 0 {
-			res, err := worker.Client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+			res, err := worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
 				Location: file.Location,
 				Offset:   0,
 				Limit:    1024 * 1024,
@@ -158,7 +164,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 
 		// Stream the file content
 		if r.Method != "HEAD" {
-			lr, err := utils.NewTelegramReader(ctx, worker.Client, file.Location, start, end, contentLength)
+			lr, err := utils.NewTelegramReader(bgCtx, worker.Client, file.Location, start, end, contentLength)
 			if err != nil {
 				logger.Error("Failed to create Telegram reader",
 					zap.Int("messageID", messageID),
