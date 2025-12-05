@@ -218,6 +218,8 @@ In addition to the mandatory variables, you can also set the following optional 
 
 - `ALLOWED_USERS` : A list of user IDs separated by comma (`,`). If this is set, only the users in this list will be able to use the bot. (default: `null`)
 
+- `LOG_LEVEL` : Set the logging level for console output. Available options: `debug`, `info`, `warn`, `error`. Set to `error` to show only errors in the console, which is useful for production environments. (default: `info`)
+
 <hr>
 
 ### Direct Streaming from Media Channel

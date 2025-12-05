@@ -44,6 +44,7 @@ type config struct {
 	LogChannelID   int64        `envconfig:"LOG_CHANNEL" required:"true"`
 	MediaChannelID int64        `envconfig:"MEDIA_CHANNEL_ID"`
 	Dev            bool         `envconfig:"DEV" default:"false"`
+	LogLevel       string       `envconfig:"LOG_LEVEL" default:"info"`
 	Port           int          `envconfig:"PORT" default:"8080"`
 	Host           string       `envconfig:"HOST" default:""`
 	HashLength     int          `envconfig:"HASH_LENGTH" default:"6"`

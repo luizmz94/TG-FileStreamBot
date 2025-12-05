@@ -27,11 +27,18 @@ var runCmd = &cobra.Command{
 var startTime time.Time = time.Now()
 
 func runApp(cmd *cobra.Command, args []string) {
-	utils.InitLogger(config.ValueOf.Dev)
+	// Initialize logger with default settings first
+	utils.InitLogger(false, "info")
 	log := utils.Logger
 	mainLogger := log.Named("Main")
 	mainLogger.Info("Starting server")
 	config.Load(log, cmd)
+
+	// Re-initialize logger with actual config values
+	utils.InitLogger(config.ValueOf.Dev, config.ValueOf.LogLevel)
+	log = utils.Logger
+	mainLogger = log.Named("Main")
+
 	router := getRouter(log)
 
 	mainBot, err := bot.StartClient(log)
@@ -61,8 +68,18 @@ func getRouter(log *zap.Logger) *gin.Engine {
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	router := gin.Default()
-	router.Use(gin.ErrorLogger())
+
+	// Disable GIN default logger if log level is error or warn
+	var router *gin.Engine
+	if config.ValueOf.LogLevel == "error" || config.ValueOf.LogLevel == "warn" {
+		router = gin.New()
+		router.Use(gin.Recovery())
+		router.Use(gin.ErrorLogger())
+	} else {
+		router = gin.Default()
+		router.Use(gin.ErrorLogger())
+	}
+
 	router.GET("/", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, types.RootResponse{
 			Message: "Server is running.",
