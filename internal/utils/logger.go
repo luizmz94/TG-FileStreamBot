@@ -11,7 +11,7 @@ import (
 
 var Logger *zap.Logger
 
-func InitLogger(debugMode bool) {
+func InitLogger(debugMode bool, logLevel string) {
 	customTimeEncoder := func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 		enc.AppendString(t.Format("02/01/2006 03:04 PM"))
 	}
@@ -33,10 +33,23 @@ func InitLogger(debugMode bool) {
 	})
 
 	var consoleLevel zapcore.Level
-	if debugMode {
+	// Parse log level from string (logLevel takes priority over debugMode)
+	switch logLevel {
+	case "debug":
 		consoleLevel = zapcore.DebugLevel
-	} else {
+	case "info":
 		consoleLevel = zapcore.InfoLevel
+	case "warn":
+		consoleLevel = zapcore.WarnLevel
+	case "error":
+		consoleLevel = zapcore.ErrorLevel
+	default:
+		// If no valid log level is set, use debugMode
+		if debugMode {
+			consoleLevel = zapcore.DebugLevel
+		} else {
+			consoleLevel = zapcore.InfoLevel
+		}
 	}
 
 	core := zapcore.NewTee(
