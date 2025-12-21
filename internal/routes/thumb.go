@@ -231,7 +231,7 @@ func (tf *ThumbnailFetcher) getThumbnail(ctx context.Context, messageID int) (st
 		return "", fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	tf.logger.Info("✅ Thumbnail saved", zap.String("file", thumbFile))
+	tf.logger.Debug("✅ Thumbnail saved", zap.String("file", thumbFile))
 	return thumbFile, nil
 }
 
@@ -241,8 +241,11 @@ var thumbnailFetcherOnce sync.Once
 
 func getThumbnailFetcher(logger *zap.Logger) *ThumbnailFetcher {
 	thumbnailFetcherOnce.Do(func() {
-		// Use the default bot worker
-		worker := bot.GetNextWorker()
+		// Use the default/main bot that has channel access
+		worker := bot.GetDefaultWorker()
+		if worker == nil {
+			logger.Fatal("No default worker available for thumbnail fetching")
+		}
 		thumbDir := "./thumbnails"
 
 		// Check if THUMB_DIR is configured in environment
@@ -283,7 +286,7 @@ func getThumbnailRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		logger.Info("Thumbnail request",
+		logger.Debug("Thumbnail request",
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
 

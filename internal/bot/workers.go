@@ -92,6 +92,18 @@ func GetNextWorker() *Worker {
 	return worker
 }
 
+// GetDefaultWorker returns the default/main bot (first bot in the list)
+// This should be used for operations that require channel access
+func GetDefaultWorker() *Worker {
+	Workers.mut.Lock()
+	defer Workers.mut.Unlock()
+	if len(Workers.Bots) == 0 {
+		Workers.log.Error("No workers available")
+		return nil
+	}
+	return Workers.Bots[0]
+}
+
 func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 	Workers.Init(log)
 
