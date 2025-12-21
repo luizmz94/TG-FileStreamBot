@@ -98,7 +98,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
 					logger.Warn("FILE_REFERENCE_EXPIRED for photo, refetching metadata",
 						zap.Int("messageID", messageID))
-					
+
 					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
 					if refetchErr != nil {
 						logger.Error("Failed to refetch photo after FILE_REFERENCE_EXPIRED",
@@ -109,7 +109,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 						})
 						return
 					}
-					
+
 					// Retry with fresh file_reference
 					res, err = worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
 						Location: freshFile.Location,
@@ -220,7 +220,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				if err.Error() != "" && strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
 					logger.Warn("FILE_REFERENCE_EXPIRED detected, refetching file metadata and retrying",
 						zap.Int("messageID", messageID))
-					
+
 					// Refetch file metadata with fresh file_reference
 					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
 					if refetchErr != nil {
@@ -232,7 +232,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 						})
 						return
 					}
-					
+
 					// Retry streaming with fresh file_reference
 					lr2, err2 := utils.NewTelegramReader(bgCtx, worker.Client, freshFile.Location, start, end, contentLength)
 					if err2 != nil {
@@ -241,7 +241,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 							zap.Error(err2))
 						return
 					}
-					
+
 					bytesWritten2, err2 := io.CopyN(w, lr2, contentLength)
 					if err2 != nil {
 						logger.Error("Error while copying stream after refetch",
@@ -251,7 +251,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 							zap.Error(err2))
 						return
 					}
-					
+
 					logger.Debug("Direct stream completed successfully after refetch",
 						zap.Int("messageID", messageID),
 						zap.String("filename", freshFile.FileName),

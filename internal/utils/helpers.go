@@ -174,7 +174,7 @@ func FileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, ch
 	log.Debug("✅ File metadata fetched (not cached due to file_reference expiration)",
 		zap.String("fileName", file.FileName),
 		zap.Int64("fileSize", file.FileSize))
-	
+
 	return file, nil
 }
 
@@ -186,7 +186,7 @@ func RefetchFileFromMessageAndChannel(ctx context.Context, client *gotgproto.Cli
 	log.Info("Refetching file metadata due to FILE_REFERENCE_EXPIRED",
 		zap.Int64("channelID", channelID),
 		zap.Int("messageID", messageID))
-	
+
 	// Just call the main function - no cache to invalidate
 	return FileFromMessageAndChannel(ctx, client, channelID, messageID)
 }
