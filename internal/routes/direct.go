@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gotd/td/tg"
@@ -50,7 +51,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		logger.Info("Direct stream request",
+		logger.Debug("Direct stream request",
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
 
@@ -93,11 +94,42 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				Limit:    1024 * 1024,
 			})
 			if err != nil {
-				logger.Error("Failed to get photo file", zap.Error(err))
-				ctx.JSON(http.StatusInternalServerError, gin.H{
-					"error": "failed to get photo file",
-				})
-				return
+				// Check for FILE_REFERENCE_EXPIRED and retry for photos
+				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
+					logger.Warn("FILE_REFERENCE_EXPIRED for photo, refetching metadata",
+						zap.Int("messageID", messageID))
+					
+					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+					if refetchErr != nil {
+						logger.Error("Failed to refetch photo after FILE_REFERENCE_EXPIRED",
+							zap.Int("messageID", messageID),
+							zap.Error(refetchErr))
+						ctx.JSON(http.StatusInternalServerError, gin.H{
+							"error": "photo file reference expired and refetch failed",
+						})
+						return
+					}
+					
+					// Retry with fresh file_reference
+					res, err = worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
+						Location: freshFile.Location,
+						Offset:   0,
+						Limit:    1024 * 1024,
+					})
+					if err != nil {
+						logger.Error("Failed to get photo file after refetch", zap.Error(err))
+						ctx.JSON(http.StatusInternalServerError, gin.H{
+							"error": "failed to get photo file after refetch",
+						})
+						return
+					}
+				} else {
+					logger.Error("Failed to get photo file", zap.Error(err))
+					ctx.JSON(http.StatusInternalServerError, gin.H{
+						"error": "failed to get photo file",
+					})
+					return
+				}
 			}
 			result, ok := res.(*tg.UploadFile)
 			if !ok {
@@ -136,7 +168,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			start = ranges[0].Start
 			end = ranges[0].End
 			ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
-			logger.Info("Content-Range",
+			logger.Debug("Content-Range",
 				zap.Int64("start", start),
 				zap.Int64("end", end),
 				zap.Int64("fileSize", file.FileSize))
@@ -184,6 +216,49 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 					return
 				}
 
+				// Check if it's FILE_REFERENCE_EXPIRED error and retry once
+				if err.Error() != "" && strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
+					logger.Warn("FILE_REFERENCE_EXPIRED detected, refetching file metadata and retrying",
+						zap.Int("messageID", messageID))
+					
+					// Refetch file metadata with fresh file_reference
+					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+					if refetchErr != nil {
+						logger.Error("Failed to refetch file after FILE_REFERENCE_EXPIRED",
+							zap.Int("messageID", messageID),
+							zap.Error(refetchErr))
+						ctx.JSON(http.StatusInternalServerError, gin.H{
+							"error": "file reference expired and refetch failed",
+						})
+						return
+					}
+					
+					// Retry streaming with fresh file_reference
+					lr2, err2 := utils.NewTelegramReader(bgCtx, worker.Client, freshFile.Location, start, end, contentLength)
+					if err2 != nil {
+						logger.Error("Failed to create Telegram reader after refetch",
+							zap.Int("messageID", messageID),
+							zap.Error(err2))
+						return
+					}
+					
+					bytesWritten2, err2 := io.CopyN(w, lr2, contentLength)
+					if err2 != nil {
+						logger.Error("Error while copying stream after refetch",
+							zap.Int("messageID", messageID),
+							zap.Int64("bytesWritten", bytesWritten2),
+							zap.Int64("expectedBytes", contentLength),
+							zap.Error(err2))
+						return
+					}
+					
+					logger.Debug("Direct stream completed successfully after refetch",
+						zap.Int("messageID", messageID),
+						zap.String("filename", freshFile.FileName),
+						zap.Int64("bytesStreamed", bytesWritten2))
+					return
+				}
+
 				logger.Error("Error while copying stream",
 					zap.Int("messageID", messageID),
 					zap.Int64("bytesWritten", bytesWritten),
@@ -192,7 +267,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				return
 			}
 
-			logger.Info("Direct stream completed successfully",
+			logger.Debug("Direct stream completed successfully",
 				zap.Int("messageID", messageID),
 				zap.String("filename", file.FileName),
 				zap.Int64("bytesStreamed", bytesWritten))
