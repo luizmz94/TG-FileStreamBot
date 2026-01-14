@@ -17,16 +17,79 @@ import (
 	"go.uber.org/zap"
 )
 
+type WorkerMetrics struct {
+	ActiveRequests   int32     // Current active requests
+	TotalRequests    int64     // Total requests handled
+	FailedRequests   int64     // Total failed requests
+	TotalResponseTime int64     // Total response time in milliseconds
+	StartTime        time.Time // When the worker started
+	LastRequestTime  time.Time // Last request timestamp
+}
+
 type Worker struct {
-	ID     int
-	Client *gotgproto.Client
-	Self   *tg.User
-	log    *zap.Logger
+	ID      int
+	Client  *gotgproto.Client
+	Self    *tg.User
+	log     *zap.Logger
+	metrics WorkerMetrics
+	metricsMutex sync.RWMutex
 }
 
 func (w *Worker) String() string {
 	return fmt.Sprintf("{Worker (%d|@%s)}", w.ID, w.Self.Username)
 }
+
+// StartRequest increments the active request counter
+func (w *Worker) StartRequest() {
+	atomic.AddInt32(&w.metrics.ActiveRequests, 1)
+	atomic.AddInt64(&w.metrics.TotalRequests, 1)
+	w.metricsMutex.Lock()
+	w.metrics.LastRequestTime = time.Now()
+	w.metricsMutex.Unlock()
+}
+
+// EndRequest decrements the active request counter and records response time
+func (w *Worker) EndRequest(startTime time.Time, failed bool) {
+	atomic.AddInt32(&w.metrics.ActiveRequests, -1)
+	
+	duration := time.Since(startTime).Milliseconds()
+	atomic.AddInt64(&w.metrics.TotalResponseTime, duration)
+	
+	if failed {
+		atomic.AddInt64(&w.metrics.FailedRequests, 1)
+	}
+}
+
+// GetActiveRequests returns the current number of active requests
+func (w *Worker) GetActiveRequests() int32 {
+	return atomic.LoadInt32(&w.metrics.ActiveRequests)
+}
+
+// GetMetrics returns a copy of the current metrics
+func (w *Worker) GetMetrics() WorkerMetrics {
+	w.metricsMutex.RLock()
+	defer w.metricsMutex.RUnlock()
+	
+	return WorkerMetrics{
+		ActiveRequests:    atomic.LoadInt32(&w.metrics.ActiveRequests),
+		TotalRequests:     atomic.LoadInt64(&w.metrics.TotalRequests),
+		FailedRequests:    atomic.LoadInt64(&w.metrics.FailedRequests),
+		TotalResponseTime: atomic.LoadInt64(&w.metrics.TotalResponseTime),
+		StartTime:         w.metrics.StartTime,
+		LastRequestTime:   w.metrics.LastRequestTime,
+	}
+}
+
+// GetAverageResponseTime returns average response time in milliseconds
+func (w *Worker) GetAverageResponseTime() float64 {
+	totalReqs := atomic.LoadInt64(&w.metrics.TotalRequests)
+	if totalReqs == 0 {
+		return 0
+	}
+	totalTime := atomic.LoadInt64(&w.metrics.TotalResponseTime)
+	return float64(totalTime) / float64(totalReqs)
+}
+
 
 type BotWorkers struct {
 	Bots     []*Worker
@@ -50,12 +113,14 @@ func (w *BotWorkers) AddDefaultClient(client *gotgproto.Client, self *tg.User) {
 		w.Bots = make([]*Worker, 0)
 	}
 	w.incStarting()
-	w.Bots = append(w.Bots, &Worker{
+	worker := &Worker{
 		Client: client,
 		ID:     w.starting,
 		Self:   self,
 		log:    w.log,
-	})
+	}
+	worker.metrics.StartTime = time.Now()
+	w.Bots = append(w.Bots, worker)
 	w.log.Sugar().Info("Default bot loaded")
 }
 
@@ -73,23 +138,86 @@ func (w *BotWorkers) Add(token string) (err error) {
 		return err
 	}
 	w.log.Sugar().Infof("Bot @%s loaded with ID %d", client.Self.Username, botID)
-	w.Bots = append(w.Bots, &Worker{
+	worker := &Worker{
 		Client: client,
 		ID:     botID,
 		Self:   client.Self,
 		log:    w.log,
-	})
+	}
+	worker.metrics.StartTime = time.Now()
+	w.Bots = append(w.Bots, worker)
 	return nil
 }
 
+// GetNextWorker selects the worker with the least active requests (intelligent load balancing)
+// This replaces the previous round-robin approach with a least-loaded strategy
 func GetNextWorker() *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
-	index := (Workers.index + 1) % len(Workers.Bots)
-	Workers.index = index
-	worker := Workers.Bots[index]
-	Workers.log.Sugar().Debugf("Using worker %d", worker.ID)
-	return worker
+	
+	if len(Workers.Bots) == 0 {
+		Workers.log.Error("No workers available")
+		return nil
+	}
+	
+	// Find the worker with the least active requests
+	var selectedWorker *Worker
+	minActiveRequests := int32(999999)
+	
+	for _, worker := range Workers.Bots {
+		activeReqs := worker.GetActiveRequests()
+		if activeReqs < minActiveRequests {
+			minActiveRequests = activeReqs
+			selectedWorker = worker
+		}
+	}
+	
+	Workers.log.Sugar().Debugf("Selected worker %d with %d active requests", 
+		selectedWorker.ID, minActiveRequests)
+	
+	return selectedWorker
+}
+
+// GetNextWorkerExcluding selects the least loaded worker excluding the specified worker IDs
+// This is useful for retry logic when a worker fails or times out
+func GetNextWorkerExcluding(excludeIDs []int) *Worker {
+	Workers.mut.Lock()
+	defer Workers.mut.Unlock()
+	
+	if len(Workers.Bots) == 0 {
+		Workers.log.Error("No workers available")
+		return nil
+	}
+	
+	var selectedWorker *Worker
+	minActiveRequests := int32(999999)
+	
+	for _, worker := range Workers.Bots {
+		// Skip excluded workers
+		excluded := false
+		for _, excludeID := range excludeIDs {
+			if worker.ID == excludeID {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
+		
+		activeReqs := worker.GetActiveRequests()
+		if activeReqs < minActiveRequests {
+			minActiveRequests = activeReqs
+			selectedWorker = worker
+		}
+	}
+	
+	if selectedWorker != nil {
+		Workers.log.Sugar().Debugf("Selected fallback worker %d with %d active requests", 
+			selectedWorker.ID, minActiveRequests)
+	}
+	
+	return selectedWorker
 }
 
 // GetDefaultWorker returns the default/main bot (first bot in the list)

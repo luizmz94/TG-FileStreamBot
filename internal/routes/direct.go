@@ -3,6 +3,7 @@ package routes
 import (
 	"EverythingSuckz/fsb/config"
 	"EverythingSuckz/fsb/internal/bot"
+	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
 	"context"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gotd/td/tg"
@@ -25,6 +27,114 @@ func (e *allRoutes) LoadDirect(r *Route) {
 	defer directLog.Info("Loaded direct stream route")
 	r.Engine.GET("/direct/:messageID", getDirectStreamRoute(directLog))
 }
+
+// fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers
+// Returns file metadata or error after all retry attempts exhausted
+func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.Worker, messageID int, channelID int64) (*types.File, error) {
+	// Create a context with 2 second timeout for the initial attempt
+	ctx, cancel := context.WithTimeout(bgCtx, 2*time.Second)
+	defer cancel()
+
+	// Channel to receive the result
+	type result struct {
+		file *types.File
+		err  error
+	}
+	resultChan := make(chan result, 1)
+
+	// Attempt to fetch file in a goroutine
+	go func() {
+		file, err := utils.FileFromMessageAndChannel(bgCtx, worker.Client, channelID, messageID)
+		resultChan <- result{file: file, err: err}
+	}()
+
+	// Wait for result or timeout
+	select {
+	case res := <-resultChan:
+		if res.err == nil {
+			logger.Debug("File fetched successfully",
+				zap.Int("workerID", worker.ID),
+				zap.Duration("duration", time.Since(time.Now())))
+			return res.file, nil
+		}
+		// If error is not timeout related, return immediately
+		if res.err.Error() == "message not found in channel" || 
+		   res.err.Error() == "message was deleted or is not accessible" {
+			return nil, res.err
+		}
+		logger.Warn("Worker failed to fetch file, will retry with another worker",
+			zap.Int("workerID", worker.ID),
+			zap.Error(res.err))
+		
+	case <-ctx.Done():
+		logger.Warn("Worker timeout (2s), retrying with another worker",
+			zap.Int("workerID", worker.ID))
+	}
+
+	// First worker failed or timed out, try with a different worker
+	excludeWorkers := []int{worker.ID}
+	maxRetries := 3
+
+	for retry := 0; retry < maxRetries; retry++ {
+		fallbackWorker := bot.GetNextWorkerExcluding(excludeWorkers)
+		if fallbackWorker == nil {
+			logger.Error("No fallback workers available")
+			return nil, fmt.Errorf("all workers exhausted")
+		}
+
+		logger.Info("Retrying with fallback worker",
+			zap.Int("retry", retry+1),
+			zap.Int("fallbackWorkerID", fallbackWorker.ID),
+			zap.String("fallbackWorkerUsername", fallbackWorker.Self.Username))
+
+		// Track the fallback worker's request
+		retryStartTime := time.Now()
+		fallbackWorker.StartRequest()
+		
+		// Create new timeout context for retry
+		retryCtx, retryCancel := context.WithTimeout(bgCtx, 2*time.Second)
+		
+		retryResultChan := make(chan result, 1)
+		go func() {
+			file, err := utils.FileFromMessageAndChannel(bgCtx, fallbackWorker.Client, channelID, messageID)
+			retryResultChan <- result{file: file, err: err}
+		}()
+
+		select {
+		case res := <-retryResultChan:
+			retryCancel()
+			fallbackWorker.EndRequest(retryStartTime, res.err != nil)
+			
+			if res.err == nil {
+				logger.Info("File fetched successfully with fallback worker",
+					zap.Int("fallbackWorkerID", fallbackWorker.ID),
+					zap.Int("retry", retry+1))
+				return res.file, nil
+			}
+			
+			// If it's a "not found" error, no point in retrying
+			if res.err.Error() == "message not found in channel" || 
+			   res.err.Error() == "message was deleted or is not accessible" {
+				return nil, res.err
+			}
+			
+			logger.Warn("Fallback worker also failed",
+				zap.Int("fallbackWorkerID", fallbackWorker.ID),
+				zap.Error(res.err))
+			excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
+			
+		case <-retryCtx.Done():
+			retryCancel()
+			fallbackWorker.EndRequest(retryStartTime, true)
+			logger.Warn("Fallback worker also timed out",
+				zap.Int("fallbackWorkerID", fallbackWorker.ID))
+			excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to fetch file after %d retries", maxRetries)
+}
+
 
 func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
@@ -55,18 +165,39 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
 
-		// Get a worker to handle the request
+		// Get a worker to handle the request with intelligent load balancing
 		worker := bot.GetNextWorker()
+		if worker == nil {
+			logger.Error("No workers available")
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "no workers available",
+			})
+			return
+		}
+
+		// Track this request
+		requestStartTime := time.Now()
+		worker.StartRequest()
+		defer func() {
+			// Check if request failed based on HTTP status
+			failed := w.Status() >= 400
+			worker.EndRequest(requestStartTime, failed)
+		}()
+
+		logger.Debug("Using worker for request",
+			zap.Int("workerID", worker.ID),
+			zap.String("workerUsername", worker.Self.Username),
+			zap.Int32("activeRequests", worker.GetActiveRequests()))
 
 		// Create a background context for Telegram API calls that won't be cancelled
 		// when the HTTP client disconnects. This prevents "context canceled" errors
 		// during file streaming.
 		bgCtx := context.Background()
 
-		// Fetch file from the configured media channel
-		file, err := utils.FileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+		// Fetch file with timeout and retry logic
+		file, err := fetchFileWithRetry(bgCtx, logger, worker, messageID, config.ValueOf.MediaChannelID)
 		if err != nil {
-			logger.Error("Failed to get file from channel",
+			logger.Error("Failed to get file from channel after retries",
 				zap.Int("messageID", messageID),
 				zap.Int64("channelID", config.ValueOf.MediaChannelID),
 				zap.Error(err))
