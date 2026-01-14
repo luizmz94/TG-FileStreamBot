@@ -39,7 +39,11 @@ func runApp(cmd *cobra.Command, args []string) {
 	log = utils.Logger
 	mainLogger = log.Named("Main")
 
+	// Create main router for file streaming
 	router := getRouter(log)
+
+	// Create separate router for status monitoring
+	statusRouter := getStatusRouter(log)
 
 	mainBot, err := bot.StartClient(log)
 	if err != nil {
@@ -53,9 +57,23 @@ func runApp(cmd *cobra.Command, args []string) {
 	}
 	workers.AddDefaultClient(mainBot, mainBot.Self)
 	bot.StartUserBot(log)
-	mainLogger.Info("Server started", zap.Int("port", config.ValueOf.Port))
+
+	mainLogger.Info("Server started", zap.Int("mainPort", config.ValueOf.Port), zap.Int("statusPort", config.ValueOf.StatusPort))
 	mainLogger.Info("File Stream Bot", zap.String("version", versionString))
-	mainLogger.Sugar().Infof("Server is running at %s", config.ValueOf.Host)
+	mainLogger.Sugar().Infof("Main server is running at %s", config.ValueOf.Host)
+	mainLogger.Sugar().Infof("Status server is running at http://0.0.0.0:%d/status", config.ValueOf.StatusPort)
+
+	// Start status server in a goroutine
+	go func() {
+		statusLogger := log.Named("StatusServer")
+		statusLogger.Info("Starting status server", zap.Int("port", config.ValueOf.StatusPort))
+		err := statusRouter.Run(fmt.Sprintf(":%d", config.ValueOf.StatusPort))
+		if err != nil {
+			statusLogger.Sugar().Fatalln("Failed to start status server:", err)
+		}
+	}()
+
+	// Start main server (blocking)
 	err = router.Run(fmt.Sprintf(":%d", config.ValueOf.Port))
 	if err != nil {
 		mainLogger.Sugar().Fatalln(err)
@@ -89,5 +107,27 @@ func getRouter(log *zap.Logger) *gin.Engine {
 		})
 	})
 	routes.Load(log, router)
+	return router
+}
+
+func getStatusRouter(log *zap.Logger) *gin.Engine {
+	if config.ValueOf.Dev {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	// Create a minimal router for status only
+	var router *gin.Engine
+	if config.ValueOf.LogLevel == "error" || config.ValueOf.LogLevel == "warn" {
+		router = gin.New()
+		router.Use(gin.Recovery())
+	} else {
+		router = gin.Default()
+	}
+
+	// Only load the status route
+	routes.LoadStatusOnly(log, router)
+
 	return router
 }

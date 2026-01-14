@@ -31,3 +31,14 @@ func Load(log *zap.Logger, r *gin.Engine) {
 		Type.Method(i).Func.Call([]reflect.Value{Value, reflect.ValueOf(route)})
 	}
 }
+
+// LoadStatusOnly loads only the status route on a separate router
+// This is used for the dedicated status server on a different port
+func LoadStatusOnly(log *zap.Logger, r *gin.Engine) {
+	log = log.Named("routes")
+	defer log.Sugar().Info("Loaded status route")
+	route := &Route{Name: "/", Engine: r}
+	route.Init(r)
+	allRoutes := &allRoutes{log}
+	allRoutes.LoadStatus(route)
+}

@@ -4,6 +4,7 @@ import (
 	"EverythingSuckz/fsb/internal/bot"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -185,6 +186,11 @@ func getNoWorkersHTML() string {
 }
 
 func generateStatusHTML(response StatusResponse) string {
+	// Sort workers by ID
+	sort.Slice(response.Workers, func(i, j int) bool {
+		return response.Workers[i].ID < response.Workers[j].ID
+	})
+
 	// Generate worker rows
 	workerRows := ""
 	for _, worker := range response.Workers {
@@ -253,8 +259,67 @@ func generateStatusHTML(response StatusResponse) string {
 		.subtitle {
 			text-align: center;
 			color: #718096;
-			margin-bottom: 30px;
+			margin-bottom: 20px;
 			font-size: 14px;
+		}
+		.controls {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			gap: 15px;
+			margin-bottom: 30px;
+			padding: 15px;
+			background: #f7fafc;
+			border-radius: 8px;
+		}
+		.control-group {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+		}
+		.control-label {
+			font-size: 14px;
+			color: #4a5568;
+			font-weight: 500;
+		}
+		.switch {
+			position: relative;
+			display: inline-block;
+			width: 50px;
+			height: 26px;
+		}
+		.switch input {
+			opacity: 0;
+			width: 0;
+			height: 0;
+		}
+		.slider {
+			position: absolute;
+			cursor: pointer;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background-color: #cbd5e0;
+			transition: .4s;
+			border-radius: 26px;
+		}
+		.slider:before {
+			position: absolute;
+			content: "";
+			height: 20px;
+			width: 20px;
+			left: 3px;
+			bottom: 3px;
+			background-color: white;
+			transition: .4s;
+			border-radius: 50%%;
+		}
+		input:checked + .slider {
+			background-color: #48bb78;
+		}
+		input:checked + .slider:before {
+			transform: translateX(24px);
 		}
 		.stats-grid {
 			display: grid;
@@ -349,7 +414,22 @@ func generateStatusHTML(response StatusResponse) string {
 <body>
 	<div class="container">
 		<h1>🤖 Workers Status Dashboard</h1>
-		<div class="subtitle">Real-time monitoring • Auto-refresh every second</div>
+		<div class="subtitle">Real-time monitoring</div>
+		
+		<div class="controls">
+			<div class="control-group">
+				<span class="control-label">Auto-refresh (1s):</span>
+				<label class="switch">
+					<input type="checkbox" id="autoRefreshToggle" checked>
+					<span class="slider"></span>
+				</label>
+			</div>
+			<div class="control-group">
+				<span id="refreshStatus" class="control-label" style="color: #48bb78;">
+					<span class="blink">●</span> Active
+				</span>
+			</div>
+		</div>
 		
 		<div class="stats-grid">
 			<div class="stat-card">
@@ -392,14 +472,51 @@ func generateStatusHTML(response StatusResponse) string {
 		</div>
 
 		<div class="timestamp">Last updated: %s</div>
-		<div class="auto-refresh"><span class="blink">●</span> Auto-refreshing...</div>
 	</div>
 
 	<script>
-		// Auto-refresh every 1 second
-		setTimeout(function() {
-			location.reload();
-		}, 1000);
+		let refreshTimer = null;
+		let isAutoRefreshEnabled = true;
+
+		const toggle = document.getElementById('autoRefreshToggle');
+		const statusText = document.getElementById('refreshStatus');
+
+		function updateStatus() {
+			if (isAutoRefreshEnabled) {
+				statusText.innerHTML = '<span class="blink">●</span> Active';
+				statusText.style.color = '#48bb78';
+			} else {
+				statusText.innerHTML = '○ Paused';
+				statusText.style.color = '#e53e3e';
+			}
+		}
+
+		function startAutoRefresh() {
+			if (refreshTimer) {
+				clearTimeout(refreshTimer);
+			}
+			if (isAutoRefreshEnabled) {
+				refreshTimer = setTimeout(function() {
+					location.reload();
+				}, 1000);
+			}
+		}
+
+		toggle.addEventListener('change', function() {
+			isAutoRefreshEnabled = this.checked;
+			updateStatus();
+			if (isAutoRefreshEnabled) {
+				startAutoRefresh();
+			} else {
+				if (refreshTimer) {
+					clearTimeout(refreshTimer);
+					refreshTimer = null;
+				}
+			}
+		});
+
+		// Start auto-refresh on page load
+		startAutoRefresh();
 	</script>
 </body>
 </html>`,

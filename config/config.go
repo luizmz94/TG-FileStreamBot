@@ -46,6 +46,7 @@ type config struct {
 	Dev            bool         `envconfig:"DEV" default:"false"`
 	LogLevel       string       `envconfig:"LOG_LEVEL" default:"info"`
 	Port           int          `envconfig:"PORT" default:"8080"`
+	StatusPort     int          `envconfig:"STATUS_PORT" default:"9090"`
 	Host           string       `envconfig:"HOST" default:""`
 	HashLength     int          `envconfig:"HASH_LENGTH" default:"6"`
 	UseSessionFile bool         `envconfig:"USE_SESSION_FILE" default:"true"`
