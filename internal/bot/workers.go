@@ -152,7 +152,7 @@ func (w *BotWorkers) Add(token string) (err error) {
 
 // GetNextWorker selects the best available worker using intelligent load balancing
 // Priority: 1) Least active requests (immediate availability)
-//          2) Least total requests (long-term distribution to avoid rate limits)
+//  2. Least total requests (long-term distribution to avoid rate limits)
 func GetNextWorker() *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
@@ -171,12 +171,12 @@ func GetNextWorker() *Worker {
 	for _, worker := range Workers.Bots {
 		activeReqs := float64(worker.GetActiveRequests())
 		totalReqs := float64(atomic.LoadInt64(&worker.metrics.TotalRequests))
-		
+
 		// Weight: Active requests are 10000x more important than total
 		// This ensures free workers are always chosen first
 		// But among free workers, distributes based on total usage
 		score := (activeReqs * 10000) + totalReqs
-		
+
 		if score < minScore {
 			minScore = score
 			selectedWorker = worker
@@ -184,7 +184,7 @@ func GetNextWorker() *Worker {
 	}
 
 	Workers.log.Sugar().Debugf("Selected worker %d (active: %d, total: %d, score: %.0f)",
-		selectedWorker.ID, 
+		selectedWorker.ID,
 		selectedWorker.GetActiveRequests(),
 		atomic.LoadInt64(&selectedWorker.metrics.TotalRequests),
 		minScore)
