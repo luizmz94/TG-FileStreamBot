@@ -18,20 +18,20 @@ import (
 )
 
 type WorkerMetrics struct {
-	ActiveRequests   int32     // Current active requests
-	TotalRequests    int64     // Total requests handled
-	FailedRequests   int64     // Total failed requests
+	ActiveRequests    int32     // Current active requests
+	TotalRequests     int64     // Total requests handled
+	FailedRequests    int64     // Total failed requests
 	TotalResponseTime int64     // Total response time in milliseconds
-	StartTime        time.Time // When the worker started
-	LastRequestTime  time.Time // Last request timestamp
+	StartTime         time.Time // When the worker started
+	LastRequestTime   time.Time // Last request timestamp
 }
 
 type Worker struct {
-	ID      int
-	Client  *gotgproto.Client
-	Self    *tg.User
-	log     *zap.Logger
-	metrics WorkerMetrics
+	ID           int
+	Client       *gotgproto.Client
+	Self         *tg.User
+	log          *zap.Logger
+	metrics      WorkerMetrics
 	metricsMutex sync.RWMutex
 }
 
@@ -51,10 +51,10 @@ func (w *Worker) StartRequest() {
 // EndRequest decrements the active request counter and records response time
 func (w *Worker) EndRequest(startTime time.Time, failed bool) {
 	atomic.AddInt32(&w.metrics.ActiveRequests, -1)
-	
+
 	duration := time.Since(startTime).Milliseconds()
 	atomic.AddInt64(&w.metrics.TotalResponseTime, duration)
-	
+
 	if failed {
 		atomic.AddInt64(&w.metrics.FailedRequests, 1)
 	}
@@ -69,7 +69,7 @@ func (w *Worker) GetActiveRequests() int32 {
 func (w *Worker) GetMetrics() WorkerMetrics {
 	w.metricsMutex.RLock()
 	defer w.metricsMutex.RUnlock()
-	
+
 	return WorkerMetrics{
 		ActiveRequests:    atomic.LoadInt32(&w.metrics.ActiveRequests),
 		TotalRequests:     atomic.LoadInt64(&w.metrics.TotalRequests),
@@ -89,7 +89,6 @@ func (w *Worker) GetAverageResponseTime() float64 {
 	totalTime := atomic.LoadInt64(&w.metrics.TotalResponseTime)
 	return float64(totalTime) / float64(totalReqs)
 }
-
 
 type BotWorkers struct {
 	Bots     []*Worker
@@ -154,16 +153,16 @@ func (w *BotWorkers) Add(token string) (err error) {
 func GetNextWorker() *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
-	
+
 	if len(Workers.Bots) == 0 {
 		Workers.log.Error("No workers available")
 		return nil
 	}
-	
+
 	// Find the worker with the least active requests
 	var selectedWorker *Worker
 	minActiveRequests := int32(999999)
-	
+
 	for _, worker := range Workers.Bots {
 		activeReqs := worker.GetActiveRequests()
 		if activeReqs < minActiveRequests {
@@ -171,10 +170,10 @@ func GetNextWorker() *Worker {
 			selectedWorker = worker
 		}
 	}
-	
-	Workers.log.Sugar().Debugf("Selected worker %d with %d active requests", 
+
+	Workers.log.Sugar().Debugf("Selected worker %d with %d active requests",
 		selectedWorker.ID, minActiveRequests)
-	
+
 	return selectedWorker
 }
 
@@ -183,15 +182,15 @@ func GetNextWorker() *Worker {
 func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
-	
+
 	if len(Workers.Bots) == 0 {
 		Workers.log.Error("No workers available")
 		return nil
 	}
-	
+
 	var selectedWorker *Worker
 	minActiveRequests := int32(999999)
-	
+
 	for _, worker := range Workers.Bots {
 		// Skip excluded workers
 		excluded := false
@@ -204,19 +203,19 @@ func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 		if excluded {
 			continue
 		}
-		
+
 		activeReqs := worker.GetActiveRequests()
 		if activeReqs < minActiveRequests {
 			minActiveRequests = activeReqs
 			selectedWorker = worker
 		}
 	}
-	
+
 	if selectedWorker != nil {
-		Workers.log.Sugar().Debugf("Selected fallback worker %d with %d active requests", 
+		Workers.log.Sugar().Debugf("Selected fallback worker %d with %d active requests",
 			selectedWorker.ID, minActiveRequests)
 	}
-	
+
 	return selectedWorker
 }
 
