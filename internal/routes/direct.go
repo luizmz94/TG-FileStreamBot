@@ -58,14 +58,14 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 			return res.file, nil
 		}
 		// If error is not timeout related, return immediately
-		if res.err.Error() == "message not found in channel" || 
-		   res.err.Error() == "message was deleted or is not accessible" {
+		if res.err.Error() == "message not found in channel" ||
+			res.err.Error() == "message was deleted or is not accessible" {
 			return nil, res.err
 		}
 		logger.Warn("Worker failed to fetch file, will retry with another worker",
 			zap.Int("workerID", worker.ID),
 			zap.Error(res.err))
-		
+
 	case <-ctx.Done():
 		logger.Warn("Worker timeout (2s), retrying with another worker",
 			zap.Int("workerID", worker.ID))
@@ -90,10 +90,10 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 		// Track the fallback worker's request
 		retryStartTime := time.Now()
 		fallbackWorker.StartRequest()
-		
+
 		// Create new timeout context for retry
 		retryCtx, retryCancel := context.WithTimeout(bgCtx, 2*time.Second)
-		
+
 		retryResultChan := make(chan result, 1)
 		go func() {
 			file, err := utils.FileFromMessageAndChannel(bgCtx, fallbackWorker.Client, channelID, messageID)
@@ -104,25 +104,25 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 		case res := <-retryResultChan:
 			retryCancel()
 			fallbackWorker.EndRequest(retryStartTime, res.err != nil)
-			
+
 			if res.err == nil {
 				logger.Info("File fetched successfully with fallback worker",
 					zap.Int("fallbackWorkerID", fallbackWorker.ID),
 					zap.Int("retry", retry+1))
 				return res.file, nil
 			}
-			
+
 			// If it's a "not found" error, no point in retrying
-			if res.err.Error() == "message not found in channel" || 
-			   res.err.Error() == "message was deleted or is not accessible" {
+			if res.err.Error() == "message not found in channel" ||
+				res.err.Error() == "message was deleted or is not accessible" {
 				return nil, res.err
 			}
-			
+
 			logger.Warn("Fallback worker also failed",
 				zap.Int("fallbackWorkerID", fallbackWorker.ID),
 				zap.Error(res.err))
 			excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
-			
+
 		case <-retryCtx.Done():
 			retryCancel()
 			fallbackWorker.EndRequest(retryStartTime, true)
@@ -134,7 +134,6 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 
 	return nil, fmt.Errorf("failed to fetch file after %d retries", maxRetries)
 }
-
 
 func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
