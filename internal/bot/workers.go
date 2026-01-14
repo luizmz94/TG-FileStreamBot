@@ -120,7 +120,7 @@ func (w *BotWorkers) AddDefaultClient(client *gotgproto.Client, self *tg.User) {
 	}
 	worker.metrics.StartTime = time.Now()
 	w.Bots = append(w.Bots, worker)
-	w.log.Sugar().Info("Default bot loaded")
+	w.log.Sugar().Infof("Default bot loaded as Worker #%d: @%s", w.starting, self.Username)
 }
 
 func (w *BotWorkers) incStarting() {
@@ -136,7 +136,9 @@ func (w *BotWorkers) Add(token string) (err error) {
 	if err != nil {
 		return err
 	}
-	w.log.Sugar().Infof("Bot @%s loaded with ID %d", client.Self.Username, botID)
+	// Extract bot ID from token for logging (first part before :)
+	tokenPrefix := token[:10] + "..."
+	w.log.Sugar().Infof("Worker #%d loaded: @%s (token: %s)", botID, client.Self.Username, tokenPrefix)
 	worker := &Worker{
 		Client: client,
 		ID:     botID,
@@ -148,8 +150,9 @@ func (w *BotWorkers) Add(token string) (err error) {
 	return nil
 }
 
-// GetNextWorker selects the worker with the least active requests (intelligent load balancing)
-// This replaces the previous round-robin approach with a least-loaded strategy
+// GetNextWorker selects the best available worker using intelligent load balancing
+// Priority: 1) Least active requests (immediate availability)
+//          2) Least total requests (long-term distribution to avoid rate limits)
 func GetNextWorker() *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
@@ -159,26 +162,39 @@ func GetNextWorker() *Worker {
 		return nil
 	}
 
-	// Find the worker with the least active requests
+	// Calculate score for each worker (lower is better)
+	// Score = (activeRequests * 1000) + (totalRequests / 10)
+	// This gives priority to immediate availability while considering long-term usage
 	var selectedWorker *Worker
-	minActiveRequests := int32(999999)
+	minScore := float64(999999999)
 
 	for _, worker := range Workers.Bots {
-		activeReqs := worker.GetActiveRequests()
-		if activeReqs < minActiveRequests {
-			minActiveRequests = activeReqs
+		activeReqs := float64(worker.GetActiveRequests())
+		totalReqs := float64(atomic.LoadInt64(&worker.metrics.TotalRequests))
+		
+		// Weight: Active requests are 10000x more important than total
+		// This ensures free workers are always chosen first
+		// But among free workers, distributes based on total usage
+		score := (activeReqs * 10000) + totalReqs
+		
+		if score < minScore {
+			minScore = score
 			selectedWorker = worker
 		}
 	}
 
-	Workers.log.Sugar().Debugf("Selected worker %d with %d active requests",
-		selectedWorker.ID, minActiveRequests)
+	Workers.log.Sugar().Debugf("Selected worker %d (active: %d, total: %d, score: %.0f)",
+		selectedWorker.ID, 
+		selectedWorker.GetActiveRequests(),
+		atomic.LoadInt64(&selectedWorker.metrics.TotalRequests),
+		minScore)
 
 	return selectedWorker
 }
 
 // GetNextWorkerExcluding selects the least loaded worker excluding the specified worker IDs
 // This is useful for retry logic when a worker fails or times out
+// Uses the same scoring algorithm as GetNextWorker
 func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 	Workers.mut.Lock()
 	defer Workers.mut.Unlock()
@@ -189,7 +205,7 @@ func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 	}
 
 	var selectedWorker *Worker
-	minActiveRequests := int32(999999)
+	minScore := float64(999999999)
 
 	for _, worker := range Workers.Bots {
 		// Skip excluded workers
@@ -204,16 +220,22 @@ func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 			continue
 		}
 
-		activeReqs := worker.GetActiveRequests()
-		if activeReqs < minActiveRequests {
-			minActiveRequests = activeReqs
+		activeReqs := float64(worker.GetActiveRequests())
+		totalReqs := float64(atomic.LoadInt64(&worker.metrics.TotalRequests))
+		score := (activeReqs * 10000) + totalReqs
+
+		if score < minScore {
+			minScore = score
 			selectedWorker = worker
 		}
 	}
 
 	if selectedWorker != nil {
-		Workers.log.Sugar().Debugf("Selected fallback worker %d with %d active requests",
-			selectedWorker.ID, minActiveRequests)
+		Workers.log.Sugar().Debugf("Selected fallback worker %d (active: %d, total: %d, score: %.0f)",
+			selectedWorker.ID,
+			selectedWorker.GetActiveRequests(),
+			atomic.LoadInt64(&selectedWorker.metrics.TotalRequests),
+			minScore)
 	}
 
 	return selectedWorker
