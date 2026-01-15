@@ -31,8 +31,8 @@ func (e *allRoutes) LoadDirect(r *Route) {
 // fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers
 // Returns file metadata or error after all retry attempts exhausted
 func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.Worker, messageID int, channelID int64) (*types.File, error) {
-	// Create a context with 2 second timeout for the initial attempt
-	ctx, cancel := context.WithTimeout(bgCtx, 2*time.Second)
+	// Create a context with 5 second timeout for the initial attempt
+	ctx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
 	defer cancel()
 
 	// Channel to receive the result
@@ -67,7 +67,7 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 			zap.Error(res.err))
 
 	case <-ctx.Done():
-		logger.Warn("Worker timeout (2s), retrying with another worker",
+		logger.Warn("Worker timeout (5s), retrying with another worker",
 			zap.Int("workerID", worker.ID))
 	}
 
@@ -92,7 +92,7 @@ func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.W
 		fallbackWorker.StartRequest()
 
 		// Create new timeout context for retry
-		retryCtx, retryCancel := context.WithTimeout(bgCtx, 2*time.Second)
+		retryCtx, retryCancel := context.WithTimeout(bgCtx, 5*time.Second)
 
 		retryResultChan := make(chan result, 1)
 		go func() {
