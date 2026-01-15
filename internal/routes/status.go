@@ -446,7 +446,7 @@ func generateStatusHTML(response StatusResponse) string {
 			</div>
 			<div class="stat-card">
 				<h3>Success Rate</h3>
-				<div class="value">%.1f%%%%</div>
+				<div class="value">%.1f%%</div>
 			</div>
 		</div>
 
@@ -460,7 +460,7 @@ func generateStatusHTML(response StatusResponse) string {
 						<th>Total</th>
 						<th>Failed</th>
 						<th>Success Rate</th>
-						<th>Avg Response</th>
+						<th>Avg Response (Last 5)</th>
 						<th>Uptime</th>
 						<th>Last Request</th>
 					</tr>
