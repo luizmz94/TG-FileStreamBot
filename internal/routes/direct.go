@@ -22,20 +22,20 @@ import (
 
 // RequestLog tracks information about each request to the /direct endpoint
 type RequestLog struct {
-	Timestamp    time.Time `json:"timestamp"`
-	MessageID    int       `json:"message_id"`
-	WorkerID     int       `json:"worker_id"`
-	WorkerName   string    `json:"worker_name"`
-	ClientIP     string    `json:"client_ip"`
-	RangeStart   int64     `json:"range_start"`
-	RangeEnd     int64     `json:"range_end"`
-	ChunkSize    int64     `json:"chunk_size"`
-	BytesSent    int64     `json:"bytes_sent"`
-	FileSize     int64     `json:"file_size"`
-	StatusCode   int       `json:"status_code"`
-	Duration     int64     `json:"duration_ms"`
-	UserAgent    string    `json:"user_agent"`
-	Referer      string    `json:"referer"`
+	Timestamp  time.Time `json:"timestamp"`
+	MessageID  int       `json:"message_id"`
+	WorkerID   int       `json:"worker_id"`
+	WorkerName string    `json:"worker_name"`
+	ClientIP   string    `json:"client_ip"`
+	RangeStart int64     `json:"range_start"`
+	RangeEnd   int64     `json:"range_end"`
+	ChunkSize  int64     `json:"chunk_size"`
+	BytesSent  int64     `json:"bytes_sent"`
+	FileSize   int64     `json:"file_size"`
+	StatusCode int       `json:"status_code"`
+	Duration   int64     `json:"duration_ms"`
+	UserAgent  string    `json:"user_agent"`
+	Referer    string    `json:"referer"`
 }
 
 // Global request log storage (circular buffer for last 300 requests)
@@ -48,7 +48,7 @@ var (
 func AddRequestLog(log RequestLog) {
 	requestLogMutex.Lock()
 	defer requestLogMutex.Unlock()
-	
+
 	if len(requestLogs) >= 300 {
 		// Remove oldest entry
 		requestLogs = requestLogs[1:]
@@ -60,7 +60,7 @@ func AddRequestLog(log RequestLog) {
 func GetRequestLogs() []RequestLog {
 	requestLogMutex.RLock()
 	defer requestLogMutex.RUnlock()
-	
+
 	// Return a copy to avoid concurrent access issues
 	logs := make([]RequestLog, len(requestLogs))
 	copy(logs, requestLogs)
@@ -225,7 +225,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 		// Track this request
 		requestStartTime := time.Now()
 		worker.StartRequest()
-		
+
 		// Initialize request log
 		reqLog := RequestLog{
 			Timestamp:  requestStartTime,
@@ -236,12 +236,12 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			UserAgent:  ctx.GetHeader("User-Agent"),
 			Referer:    ctx.GetHeader("Referer"),
 		}
-		
+
 		defer func() {
 			// Check if request failed based on HTTP status
 			failed := w.Status() >= 400
 			worker.EndRequest(requestStartTime, failed)
-			
+
 			// Complete request log with actual bytes sent
 			// Usa o Size() nativo do gin.ResponseWriter que conta bytes escritos
 			reqLog.StatusCode = w.Status()
@@ -371,7 +371,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				zap.Int64("fileSize", file.FileSize))
 			w.WriteHeader(http.StatusPartialContent)
 		}
-		
+
 		// Update request log with file and range info
 		reqLog.FileSize = file.FileSize
 		reqLog.RangeStart = start
