@@ -233,10 +233,10 @@ func generateStatusHTML(response StatusResponse) string {
 	requestRows := ""
 	for i := len(response.RequestLogs) - 1; i >= 0; i-- {
 		reqLog := response.RequestLogs[i]
-		
+
 		// Format timestamp
 		timeStr := reqLog.Timestamp.Format("15:04:05")
-		
+
 		// Status color
 		statusClass := ""
 		if reqLog.StatusCode >= 200 && reqLog.StatusCode < 300 {
@@ -244,19 +244,19 @@ func generateStatusHTML(response StatusResponse) string {
 		} else if reqLog.StatusCode >= 400 {
 			statusClass = "status-error"
 		}
-		
+
 		// Truncate User Agent
 		userAgent := reqLog.UserAgent
 		if len(userAgent) > 50 {
 			userAgent = userAgent[:47] + "..."
 		}
-		
+
 		// Highlight bytes sent if different from chunk size (incomplete download)
 		bytesSentClass := ""
 		if reqLog.BytesSent < reqLog.ChunkSize {
 			bytesSentClass = "text-yellow-600 font-bold"
 		}
-		
+
 		requestRows += fmt.Sprintf(`
 		<tr class="%s">
 			<td>%s</td>
