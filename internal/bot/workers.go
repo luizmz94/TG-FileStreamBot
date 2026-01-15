@@ -24,6 +24,7 @@ type WorkerMetrics struct {
 	TotalResponseTime int64     // Total response time in milliseconds
 	StartTime         time.Time // When the worker started
 	LastRequestTime   time.Time // Last request timestamp
+	Last5Times        []int64   // Last 5 response times in milliseconds
 }
 
 type Worker struct {
@@ -33,6 +34,8 @@ type Worker struct {
 	log          *zap.Logger
 	metrics      WorkerMetrics
 	metricsMutex sync.RWMutex
+	last5Times   []int64 // Circular buffer for last 5 response times
+	last5Mutex   sync.Mutex
 }
 
 func (w *Worker) String() string {
@@ -54,6 +57,18 @@ func (w *Worker) EndRequest(startTime time.Time, failed bool) {
 
 	duration := time.Since(startTime).Milliseconds()
 	atomic.AddInt64(&w.metrics.TotalResponseTime, duration)
+
+	// Store in last 5 times buffer
+	w.last5Mutex.Lock()
+	if w.last5Times == nil {
+		w.last5Times = make([]int64, 0, 5)
+	}
+	if len(w.last5Times) >= 5 {
+		// Remove oldest entry
+		w.last5Times = w.last5Times[1:]
+	}
+	w.last5Times = append(w.last5Times, duration)
+	w.last5Mutex.Unlock()
 
 	if failed {
 		atomic.AddInt64(&w.metrics.FailedRequests, 1)
@@ -80,14 +95,20 @@ func (w *Worker) GetMetrics() WorkerMetrics {
 	}
 }
 
-// GetAverageResponseTime returns average response time in milliseconds
+// GetAverageResponseTime returns average response time of last 5 requests in milliseconds
 func (w *Worker) GetAverageResponseTime() float64 {
-	totalReqs := atomic.LoadInt64(&w.metrics.TotalRequests)
-	if totalReqs == 0 {
+	w.last5Mutex.Lock()
+	defer w.last5Mutex.Unlock()
+
+	if len(w.last5Times) == 0 {
 		return 0
 	}
-	totalTime := atomic.LoadInt64(&w.metrics.TotalResponseTime)
-	return float64(totalTime) / float64(totalReqs)
+
+	var total int64
+	for _, t := range w.last5Times {
+		total += t
+	}
+	return float64(total) / float64(len(w.last5Times))
 }
 
 type BotWorkers struct {
