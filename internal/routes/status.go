@@ -38,6 +38,7 @@ type StatusResponse struct {
 	TotalFailedReqs    int64          `json:"total_failed_requests"`
 	OverallSuccessRate float64        `json:"overall_success_rate"`
 	Workers            []WorkerStatus `json:"workers"`
+	RequestLogs        []RequestLog   `json:"request_logs"`
 	Timestamp          time.Time      `json:"timestamp"`
 }
 
@@ -113,6 +114,9 @@ func getStatusRoute(logger *zap.Logger) gin.HandlerFunc {
 			overallSuccessRate = (float64(successfulReqs) / float64(totalRequests)) * 100
 		}
 
+		// Get request logs from direct route
+		requestLogs := GetRequestLogs()
+
 		response := StatusResponse{
 			TotalWorkers:       len(bot.Workers.Bots),
 			TotalActiveReqs:    totalActiveReqs,
@@ -120,6 +124,7 @@ func getStatusRoute(logger *zap.Logger) gin.HandlerFunc {
 			TotalFailedReqs:    totalFailedReqs,
 			OverallSuccessRate: overallSuccessRate,
 			Workers:            workers,
+			RequestLogs:        requestLogs,
 			Timestamp:          now,
 		}
 
@@ -222,6 +227,54 @@ func generateStatusHTML(response StatusResponse) string {
 		</tr>`, statusClass, worker.ID, statusIcon, worker.Username,
 			worker.ActiveRequests, worker.TotalRequests, worker.FailedRequests,
 			worker.SuccessRate, worker.AverageResponseMs, uptimeStr, worker.LastRequestAgo)
+	}
+
+	// Generate request log rows (reverse order - newest first)
+	requestRows := ""
+	for i := len(response.RequestLogs) - 1; i >= 0; i-- {
+		reqLog := response.RequestLogs[i]
+		
+		// Format timestamp
+		timeStr := reqLog.Timestamp.Format("15:04:05")
+		
+		// Status color
+		statusClass := ""
+		if reqLog.StatusCode >= 200 && reqLog.StatusCode < 300 {
+			statusClass = "status-success"
+		} else if reqLog.StatusCode >= 400 {
+			statusClass = "status-error"
+		}
+		
+		// Truncate User Agent
+		userAgent := reqLog.UserAgent
+		if len(userAgent) > 50 {
+			userAgent = userAgent[:47] + "..."
+		}
+		
+		// Highlight bytes sent if different from chunk size (incomplete download)
+		bytesSentClass := ""
+		if reqLog.BytesSent < reqLog.ChunkSize {
+			bytesSentClass = "text-yellow-600 font-bold"
+		}
+		
+		requestRows += fmt.Sprintf(`
+		<tr class="%s">
+			<td>%s</td>
+			<td><strong>%d</strong></td>
+			<td>#%d @%s</td>
+			<td>%d</td>
+			<td>%d</td>
+			<td>%d</td>
+			<td class="%s">%d</td>
+			<td>%d</td>
+			<td><span class="status-badge status-%d">%d</span></td>
+			<td>%d ms</td>
+			<td>%s</td>
+			<td title="%s">%s</td>
+		</tr>`, statusClass, timeStr, reqLog.MessageID, reqLog.WorkerID, reqLog.WorkerName,
+			reqLog.RangeStart, reqLog.RangeEnd, reqLog.ChunkSize, bytesSentClass, reqLog.BytesSent, reqLog.FileSize,
+			reqLog.StatusCode, reqLog.StatusCode, reqLog.Duration,
+			reqLog.ClientIP, reqLog.UserAgent, userAgent)
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -382,9 +435,34 @@ func generateStatusHTML(response StatusResponse) string {
 		.status-busy {
 			background: #fed7d7;
 		}
+		.status-success {
+			background: #f0fff4;
+		}
+		.status-error {
+			background: #fed7d7;
+		}
+		.status-badge {
+			padding: 4px 8px;
+			border-radius: 4px;
+			font-weight: 600;
+			font-size: 12px;
+		}
+		.status-200, .status-206 {
+			background: #c6f6d5;
+			color: #22543d;
+		}
+		.status-404, .status-400, .status-500 {
+			background: #feb2b2;
+			color: #742a2a;
+		}
 		.active-reqs {
 			font-weight: bold;
 			color: #2b6cb0;
+		}
+		h2 {
+			font-size: 24px;
+			border-bottom: 2px solid #e2e8f0;
+			padding-bottom: 10px;
 		}
 		.success-rate {
 			font-weight: 600;
@@ -471,6 +549,31 @@ func generateStatusHTML(response StatusResponse) string {
 			</table>
 		</div>
 
+		<h2 style="margin-top: 40px; margin-bottom: 20px; color: #2d3748;">📊 Recent Requests (Last 300)</h2>
+		<div class="table-container">
+			<table>
+				<thead>
+					<tr>
+						<th>Time</th>
+						<th>Message ID</th>
+						<th>Worker</th>
+						<th>Range Start</th>
+						<th>Range End</th>
+						<th>Chunk Size</th>
+						<th>Bytes Sent</th>
+						<th>File Size</th>
+						<th>Status</th>
+						<th>Duration</th>
+						<th>Client IP</th>
+						<th>User Agent</th>
+					</tr>
+				</thead>
+				<tbody>
+					%s
+				</tbody>
+			</table>
+		</div>
+
 		<div class="timestamp">Last updated: %s</div>
 	</div>
 
@@ -525,6 +628,7 @@ func generateStatusHTML(response StatusResponse) string {
 		response.TotalRequests,
 		response.OverallSuccessRate,
 		workerRows,
+		requestRows,
 		response.Timestamp.Format("2006-01-02 15:04:05"))
 }
 
@@ -541,4 +645,21 @@ func formatUptime(seconds int64) string {
 	} else {
 		return fmt.Sprintf("%dm", minutes)
 	}
+}
+
+func formatFileSize(bytes int64) string {
+	if bytes == 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	return fmt.Sprintf("%.1f %s", float64(bytes)/float64(div), units[exp])
 }
