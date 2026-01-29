@@ -76,111 +76,175 @@ func (e *allRoutes) LoadDirect(r *Route) {
 	r.Engine.GET("/direct/:messageID", getDirectStreamRoute(directLog))
 }
 
-// fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers
-// Returns file metadata or error after all retry attempts exhausted
-func fetchFileWithRetry(bgCtx context.Context, logger *zap.Logger, worker *bot.Worker, messageID int, channelID int64) (*types.File, error) {
-	// Create a context with 5 second timeout for the initial attempt
-	ctx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
-	defer cancel()
+// fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers.
+// It returns both the file metadata and the worker that produced it so we can stream using
+// the same bot account (file_reference is tied to the bot).
+func fetchFileWithRetry(
+	bgCtx context.Context,
+	logger *zap.Logger,
+	worker *bot.Worker,
+	messageID int,
+	channelID int64,
+	exclude []int,
+) (*types.File, *bot.Worker, error) {
+	// keep track of which workers have been tried to avoid immediate reuse
+	excludeWorkers := append([]int{}, exclude...)
+	excludeWorkers = append(excludeWorkers, worker.ID)
 
-	// Channel to receive the result
 	type result struct {
 		file *types.File
 		err  error
+		w    *bot.Worker
 	}
-	resultChan := make(chan result, 1)
 
-	// Attempt to fetch file in a goroutine
-	go func() {
-		file, err := utils.FileFromMessageAndChannel(bgCtx, worker.Client, channelID, messageID)
-		resultChan <- result{file: file, err: err}
-	}()
+	tryOnce := func(ctx context.Context, w *bot.Worker) result {
+		// bound each attempt to 5s to avoid hanging on a single bot
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		file, err := utils.FileFromMessageAndChannel(ctx, w.Client, channelID, messageID)
+		return result{file: file, err: err, w: w}
+	}
 
-	// Wait for result or timeout
-	select {
-	case res := <-resultChan:
-		if res.err == nil {
-			logger.Debug("File fetched successfully",
-				zap.Int("workerID", worker.ID),
-				zap.Duration("duration", time.Since(time.Now())))
-			return res.file, nil
-		}
-		// If error is not timeout related, return immediately
-		if res.err.Error() == "message not found in channel" ||
-			res.err.Error() == "message was deleted or is not accessible" {
-			return nil, res.err
-		}
-		logger.Warn("Worker failed to fetch file, will retry with another worker",
-			zap.Int("workerID", worker.ID),
-			zap.Error(res.err))
-
-	case <-ctx.Done():
-		logger.Warn("Worker timeout (5s), retrying with another worker",
+	res := tryOnce(bgCtx, worker)
+	if res.err == nil {
+		logger.Debug("File fetched successfully",
 			zap.Int("workerID", worker.ID))
+		return res.file, worker, nil
 	}
 
-	// First worker failed or timed out, try with a different worker
-	excludeWorkers := []int{worker.ID}
-	maxRetries := 3
+	// Hard errors should stop immediately
+	if res.err != nil && (res.err.Error() == "message not found in channel" ||
+		res.err.Error() == "message was deleted or is not accessible") {
+		return nil, nil, res.err
+	}
 
+	logger.Warn("Worker failed to fetch file, will retry with another worker",
+		zap.Int("workerID", worker.ID),
+		zap.Error(res.err))
+
+	maxRetries := 3
 	for retry := 0; retry < maxRetries; retry++ {
 		fallbackWorker := bot.GetNextWorkerExcluding(excludeWorkers)
 		if fallbackWorker == nil {
 			logger.Error("No fallback workers available")
-			return nil, fmt.Errorf("all workers exhausted")
+			return nil, nil, fmt.Errorf("all workers exhausted")
 		}
+		excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
 
 		logger.Info("Retrying with fallback worker",
 			zap.Int("retry", retry+1),
 			zap.Int("fallbackWorkerID", fallbackWorker.ID),
 			zap.String("fallbackWorkerUsername", fallbackWorker.Self.Username))
 
-		// Track the fallback worker's request
-		retryStartTime := time.Now()
-		fallbackWorker.StartRequest()
-
-		// Create new timeout context for retry
-		retryCtx, retryCancel := context.WithTimeout(bgCtx, 5*time.Second)
-
-		retryResultChan := make(chan result, 1)
-		go func() {
-			file, err := utils.FileFromMessageAndChannel(bgCtx, fallbackWorker.Client, channelID, messageID)
-			retryResultChan <- result{file: file, err: err}
-		}()
-
-		select {
-		case res := <-retryResultChan:
-			retryCancel()
-			fallbackWorker.EndRequest(retryStartTime, res.err != nil)
-
-			if res.err == nil {
-				logger.Info("File fetched successfully with fallback worker",
-					zap.Int("fallbackWorkerID", fallbackWorker.ID),
-					zap.Int("retry", retry+1))
-				return res.file, nil
-			}
-
-			// If it's a "not found" error, no point in retrying
-			if res.err.Error() == "message not found in channel" ||
-				res.err.Error() == "message was deleted or is not accessible" {
-				return nil, res.err
-			}
-
-			logger.Warn("Fallback worker also failed",
+		res = tryOnce(bgCtx, fallbackWorker)
+		if res.err == nil {
+			logger.Info("File fetched successfully with fallback worker",
 				zap.Int("fallbackWorkerID", fallbackWorker.ID),
-				zap.Error(res.err))
-			excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
+				zap.Int("retry", retry+1))
+			return res.file, fallbackWorker, nil
+		}
 
-		case <-retryCtx.Done():
-			retryCancel()
-			fallbackWorker.EndRequest(retryStartTime, true)
-			logger.Warn("Fallback worker also timed out",
-				zap.Int("fallbackWorkerID", fallbackWorker.ID))
-			excludeWorkers = append(excludeWorkers, fallbackWorker.ID)
+		if res.err.Error() == "message not found in channel" ||
+			res.err.Error() == "message was deleted or is not accessible" {
+			return nil, nil, res.err
+		}
+
+		logger.Warn("Fallback worker also failed",
+			zap.Int("fallbackWorkerID", fallbackWorker.ID),
+			zap.Error(res.err))
+	}
+
+	return nil, nil, fmt.Errorf("failed to fetch file after %d retries", maxRetries)
+}
+
+// fetchFileWithRace spins two workers concurrently and returns the first successful response.
+// If only one worker is provided it behaves like a single attempt with retry logic.
+func fetchFileWithRace(
+	bgCtx context.Context,
+	logger *zap.Logger,
+	workers []*bot.Worker,
+	messageID int,
+	channelID int64,
+) (*types.File, *bot.Worker, error) {
+	if len(workers) == 0 {
+		return nil, nil, fmt.Errorf("no workers provided")
+	}
+
+	// If there's only one worker, fall back to normal retry logic
+	if len(workers) == 1 {
+		// logger.Debug("Racing with single worker, using retry logic")
+		return fetchFileWithRetry(bgCtx, logger, workers[0], messageID, channelID, nil)
+	}
+
+	// logger.Debug("Starting race between workers",
+	// 	zap.Int("numWorkers", len(workers)),
+	// 	zap.Ints("workerIDs", func() []int {
+	// 		ids := make([]int, len(workers))
+	// 		for i, w := range workers {
+	// 			ids[i] = w.ID
+	// 		}
+	// 		return ids
+	// 	}()))
+
+	type result struct {
+		file   *types.File
+		worker *bot.Worker
+		err    error
+		time   time.Time
+	}
+
+	ctx, cancel := context.WithCancel(bgCtx)
+	defer cancel()
+
+	results := make(chan result, len(workers))
+
+	// raceStartTime := time.Now()
+	for _, w := range workers {
+		worker := w
+		go func() {
+			attemptStartTime := time.Now()
+			attemptCtx, attemptCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer attemptCancel()
+
+			file, err := utils.FileFromMessageAndChannel(attemptCtx, worker.Client, channelID, messageID)
+			// Use buffered channel to avoid goroutine leak if caller returns early
+			results <- result{file: file, worker: worker, err: err, time: attemptStartTime}
+		}()
+	}
+
+	var firstErr error
+	for i := 0; i < len(workers); i++ {
+		select {
+		case res := <-results:
+			// workerDuration := time.Since(res.time)
+			if res.err == nil && res.file != nil {
+				// cancel other attempts; they will exit because of context cancellation
+				cancel()
+				// raceDuration := time.Since(raceStartTime)
+				// logger.Info("Race winner",
+				// 	zap.Int("workerID", res.worker.ID),
+				// 	zap.String("workerUsername", res.worker.Self.Username),
+				// 	zap.Duration("workerFetchTime", workerDuration),
+				// 	zap.Duration("totalRaceTime", raceDuration))
+				return res.file, res.worker, nil
+			}
+			// logger.Debug("Worker failed in race",
+			// 	zap.Int("workerID", res.worker.ID),
+			// 	zap.Duration("duration", workerDuration),
+			// 	zap.Error(res.err))
+			if firstErr == nil {
+				firstErr = res.err
+			}
+		case <-ctx.Done():
+			// context cancelled because another worker already succeeded
+			return nil, nil, ctx.Err()
 		}
 	}
 
-	return nil, fmt.Errorf("failed to fetch file after %d retries", maxRetries)
+	if firstErr == nil {
+		firstErr = fmt.Errorf("failed to fetch file with any worker")
+	}
+	return nil, nil, firstErr
 }
 
 func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
@@ -212,56 +276,59 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
 
-		// Get a worker to handle the request with intelligent load balancing
-		worker := bot.GetNextWorker()
-		if worker == nil {
+		// Choose up to two workers and race them; fallback to others if needed
+		primaryWorker := bot.GetNextWorker()
+		if primaryWorker == nil {
 			logger.Error("No workers available")
 			ctx.JSON(http.StatusServiceUnavailable, gin.H{
 				"error": "no workers available",
 			})
 			return
 		}
+		workerPool := []*bot.Worker{primaryWorker}
+		seenWorkerIDs := []int{primaryWorker.ID}
+
+		if secondary := bot.GetNextWorkerExcluding(seenWorkerIDs); secondary != nil {
+			workerPool = append(workerPool, secondary)
+			seenWorkerIDs = append(seenWorkerIDs, secondary.ID)
+		}
 
 		// Track this request
 		requestStartTime := time.Now()
-		worker.StartRequest()
 
-		// Initialize request log
+		// Initialize request log (worker info is filled after winner is known)
 		reqLog := RequestLog{
-			Timestamp:  requestStartTime,
-			MessageID:  messageID,
-			WorkerID:   worker.ID,
-			WorkerName: worker.Self.Username,
-			ClientIP:   ctx.ClientIP(),
-			UserAgent:  ctx.GetHeader("User-Agent"),
-			Referer:    ctx.GetHeader("Referer"),
+			Timestamp: requestStartTime,
+			MessageID: messageID,
+			ClientIP:  ctx.ClientIP(),
+			UserAgent: ctx.GetHeader("User-Agent"),
+			Referer:   ctx.GetHeader("Referer"),
 		}
-
-		defer func() {
-			// Check if request failed based on HTTP status
-			failed := w.Status() >= 400
-			worker.EndRequest(requestStartTime, failed)
-
-			// Complete request log with actual bytes sent
-			// Usa o Size() nativo do gin.ResponseWriter que conta bytes escritos
-			reqLog.StatusCode = w.Status()
-			reqLog.Duration = time.Since(requestStartTime).Milliseconds()
-			reqLog.BytesSent = int64(w.Size())
-			AddRequestLog(reqLog)
-		}()
-
-		logger.Debug("Using worker for request",
-			zap.Int("workerID", worker.ID),
-			zap.String("workerUsername", worker.Self.Username),
-			zap.Int32("activeRequests", worker.GetActiveRequests()))
 
 		// Create a background context for Telegram API calls that won't be cancelled
 		// when the HTTP client disconnects. This prevents "context canceled" errors
 		// during file streaming.
 		bgCtx := context.Background()
 
-		// Fetch file with timeout and retry logic
-		file, err := fetchFileWithRetry(bgCtx, logger, worker, messageID, config.ValueOf.MediaChannelID)
+		// Race two bots (when available) and fall back to remaining pool if both fail
+		// fetchStartTime := time.Now()
+		file, selectedWorker, err := fetchFileWithRace(bgCtx, logger, workerPool, messageID, config.ValueOf.MediaChannelID)
+		if err != nil {
+			// logger.Warn("Race failed, using fallback worker",
+			// 	zap.Duration("raceDuration", time.Since(fetchStartTime)),
+			// 	zap.Error(err))
+			fallbackWorker := bot.GetNextWorkerExcluding(seenWorkerIDs)
+			if fallbackWorker != nil {
+				seenWorkerIDs = append(seenWorkerIDs, fallbackWorker.ID)
+				file, selectedWorker, err = fetchFileWithRetry(bgCtx, logger, fallbackWorker, messageID, config.ValueOf.MediaChannelID, seenWorkerIDs)
+			}
+		}
+		// if err == nil {
+		// 	logger.Debug("File metadata fetched",
+		// 		zap.Duration("totalFetchTime", time.Since(fetchStartTime)),
+		// 		zap.Int("workerID", selectedWorker.ID))
+		// }
+
 		if err != nil {
 			logger.Error("Failed to get file from channel after retries",
 				zap.Int("messageID", messageID),
@@ -283,9 +350,41 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
+		// Safety check: ensure we have a worker for streaming
+		if selectedWorker == nil {
+			logger.Error("No worker selected after fetch")
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "no workers available",
+			})
+			return
+		}
+
+		// Now that we know the winning worker, mark the request as active
+		selectedWorker.StartRequest()
+		reqLog.WorkerID = selectedWorker.ID
+		reqLog.WorkerName = selectedWorker.Self.Username
+
+		defer func() {
+			// Check if request failed based on HTTP status
+			failed := w.Status() >= 400
+			selectedWorker.EndRequest(requestStartTime, failed)
+
+			// Complete request log with actual bytes sent
+			// Usa o Size() nativo do gin.ResponseWriter que conta bytes escritos
+			reqLog.StatusCode = w.Status()
+			reqLog.Duration = time.Since(requestStartTime).Milliseconds()
+			reqLog.BytesSent = int64(w.Size())
+			AddRequestLog(reqLog)
+		}()
+
+		logger.Debug("Using worker for request",
+			zap.Int("workerID", selectedWorker.ID),
+			zap.String("workerUsername", selectedWorker.Self.Username),
+			zap.Int32("activeRequests", selectedWorker.GetActiveRequests()))
+
 		// Handle photos (which have FileSize 0)
 		if file.FileSize == 0 {
-			res, err := worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
+			res, err := selectedWorker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
 				Location: file.Location,
 				Offset:   0,
 				Limit:    1024 * 1024,
@@ -296,7 +395,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 					logger.Warn("FILE_REFERENCE_EXPIRED for photo, refetching metadata",
 						zap.Int("messageID", messageID))
 
-					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, selectedWorker.Client, config.ValueOf.MediaChannelID, messageID)
 					if refetchErr != nil {
 						logger.Error("Failed to refetch photo after FILE_REFERENCE_EXPIRED",
 							zap.Int("messageID", messageID),
@@ -308,7 +407,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 					}
 
 					// Retry with fresh file_reference
-					res, err = worker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
+					res, err = selectedWorker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
 						Location: freshFile.Location,
 						Offset:   0,
 						Limit:    1024 * 1024,
@@ -399,7 +498,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 
 		// Stream the file content
 		if r.Method != "HEAD" {
-			lr, err := utils.NewTelegramReader(bgCtx, worker.Client, file.Location, start, end, contentLength)
+			lr, err := utils.NewTelegramReader(bgCtx, selectedWorker.Client, file.Location, start, end, contentLength)
 			if err != nil {
 				logger.Error("Failed to create Telegram reader",
 					zap.Int("messageID", messageID),
@@ -425,7 +524,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 						zap.Int("messageID", messageID))
 
 					// Refetch file metadata with fresh file_reference
-					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, worker.Client, config.ValueOf.MediaChannelID, messageID)
+					freshFile, refetchErr := utils.RefetchFileFromMessageAndChannel(bgCtx, selectedWorker.Client, config.ValueOf.MediaChannelID, messageID)
 					if refetchErr != nil {
 						logger.Error("Failed to refetch file after FILE_REFERENCE_EXPIRED",
 							zap.Int("messageID", messageID),
@@ -437,7 +536,7 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 					}
 
 					// Retry streaming with fresh file_reference
-					lr2, err2 := utils.NewTelegramReader(bgCtx, worker.Client, freshFile.Location, start, end, contentLength)
+					lr2, err2 := utils.NewTelegramReader(bgCtx, selectedWorker.Client, freshFile.Location, start, end, contentLength)
 					if err2 != nil {
 						logger.Error("Failed to create Telegram reader after refetch",
 							zap.Int("messageID", messageID),
