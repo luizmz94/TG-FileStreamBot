@@ -172,43 +172,28 @@ func fetchFileWithRace(
 
 	// If there's only one worker, fall back to normal retry logic
 	if len(workers) == 1 {
-		// logger.Debug("Racing with single worker, using retry logic")
 		return fetchFileWithRetry(bgCtx, logger, workers[0], messageID, channelID, nil)
 	}
-
-	// logger.Debug("Starting race between workers",
-	// 	zap.Int("numWorkers", len(workers)),
-	// 	zap.Ints("workerIDs", func() []int {
-	// 		ids := make([]int, len(workers))
-	// 		for i, w := range workers {
-	// 			ids[i] = w.ID
-	// 		}
-	// 		return ids
-	// 	}()))
 
 	type result struct {
 		file   *types.File
 		worker *bot.Worker
 		err    error
-		time   time.Time
 	}
 
 	ctx, cancel := context.WithCancel(bgCtx)
 	defer cancel()
 
 	results := make(chan result, len(workers))
-
-	// raceStartTime := time.Now()
 	for _, w := range workers {
 		worker := w
 		go func() {
-			attemptStartTime := time.Now()
 			attemptCtx, attemptCancel := context.WithTimeout(ctx, 5*time.Second)
 			defer attemptCancel()
 
 			file, err := utils.FileFromMessageAndChannel(attemptCtx, worker.Client, channelID, messageID)
 			// Use buffered channel to avoid goroutine leak if caller returns early
-			results <- result{file: file, worker: worker, err: err, time: attemptStartTime}
+			results <- result{file: file, worker: worker, err: err}
 		}()
 	}
 
@@ -216,22 +201,14 @@ func fetchFileWithRace(
 	for i := 0; i < len(workers); i++ {
 		select {
 		case res := <-results:
-			// workerDuration := time.Since(res.time)
 			if res.err == nil && res.file != nil {
 				// cancel other attempts; they will exit because of context cancellation
 				cancel()
-				// raceDuration := time.Since(raceStartTime)
-				// logger.Info("Race winner",
-				// 	zap.Int("workerID", res.worker.ID),
-				// 	zap.String("workerUsername", res.worker.Self.Username),
-				// 	zap.Duration("workerFetchTime", workerDuration),
-				// 	zap.Duration("totalRaceTime", raceDuration))
+				logger.Info("Race winner",
+					zap.Int("workerID", res.worker.ID),
+					zap.String("workerUsername", res.worker.Self.Username))
 				return res.file, res.worker, nil
 			}
-			// logger.Debug("Worker failed in race",
-			// 	zap.Int("workerID", res.worker.ID),
-			// 	zap.Duration("duration", workerDuration),
-			// 	zap.Error(res.err))
 			if firstErr == nil {
 				firstErr = res.err
 			}
@@ -270,6 +247,23 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				"error": "invalid message ID",
 			})
 			return
+		}
+
+		// Validate HMAC signature if STREAM_SECRET is configured
+		if config.ValueOf.StreamSecret != "" {
+			signature := ctx.Query("sig")
+			expiration := ctx.Query("exp")
+
+			if err := utils.ValidateHMACSignature(config.ValueOf.StreamSecret, messageID, signature, expiration); err != nil {
+				logger.Warn("HMAC validation failed",
+					zap.Int("messageID", messageID),
+					zap.String("clientIP", ctx.ClientIP()),
+					zap.Error(err))
+				ctx.JSON(http.StatusUnauthorized, gin.H{
+					"error": "unauthorized: invalid or expired signature",
+				})
+				return
+			}
 		}
 
 		logger.Debug("Direct stream request",
@@ -311,23 +305,14 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 		bgCtx := context.Background()
 
 		// Race two bots (when available) and fall back to remaining pool if both fail
-		// fetchStartTime := time.Now()
 		file, selectedWorker, err := fetchFileWithRace(bgCtx, logger, workerPool, messageID, config.ValueOf.MediaChannelID)
 		if err != nil {
-			// logger.Warn("Race failed, using fallback worker",
-			// 	zap.Duration("raceDuration", time.Since(fetchStartTime)),
-			// 	zap.Error(err))
 			fallbackWorker := bot.GetNextWorkerExcluding(seenWorkerIDs)
 			if fallbackWorker != nil {
 				seenWorkerIDs = append(seenWorkerIDs, fallbackWorker.ID)
 				file, selectedWorker, err = fetchFileWithRetry(bgCtx, logger, fallbackWorker, messageID, config.ValueOf.MediaChannelID, seenWorkerIDs)
 			}
 		}
-		// if err == nil {
-		// 	logger.Debug("File metadata fetched",
-		// 		zap.Duration("totalFetchTime", time.Since(fetchStartTime)),
-		// 		zap.Int("workerID", selectedWorker.ID))
-		// }
 
 		if err != nil {
 			logger.Error("Failed to get file from channel after retries",

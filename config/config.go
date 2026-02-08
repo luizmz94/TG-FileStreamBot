@@ -53,6 +53,7 @@ type config struct {
 	UserSession    string       `envconfig:"USER_SESSION"`
 	UsePublicIP    bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
 	AllowedUsers   allowedUsers `envconfig:"ALLOWED_USERS"`
+	StreamSecret   string       `envconfig:"STREAM_SECRET"` // HMAC secret for /direct route authentication
 	MultiTokens    []string
 }
 
