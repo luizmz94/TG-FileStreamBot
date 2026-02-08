@@ -250,6 +250,23 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
+		// Validate HMAC signature if STREAM_SECRET is configured
+		if config.ValueOf.StreamSecret != "" {
+			signature := ctx.Query("sig")
+			expiration := ctx.Query("exp")
+
+			if err := utils.ValidateHMACSignature(config.ValueOf.StreamSecret, messageID, signature, expiration); err != nil {
+				logger.Warn("HMAC validation failed",
+					zap.Int("messageID", messageID),
+					zap.String("clientIP", ctx.ClientIP()),
+					zap.Error(err))
+				ctx.JSON(http.StatusUnauthorized, gin.H{
+					"error": "unauthorized: invalid or expired signature",
+				})
+				return
+			}
+		}
+
 		logger.Debug("Direct stream request",
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID))
