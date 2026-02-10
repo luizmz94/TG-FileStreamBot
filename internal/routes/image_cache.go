@@ -17,19 +17,20 @@ func getImageCacheBaseDir() string {
 	if envDir := strings.TrimSpace(os.Getenv(imageCacheDirEnvName)); envDir != "" {
 		return filepath.Clean(envDir)
 	}
+	// Backward compatibility: if only THUMB_DIR is configured,
+	// reuse it as the base image cache for both /thumb and /direct photo.
+	if envThumbDir := strings.TrimSpace(os.Getenv(thumbDirEnvName)); envThumbDir != "" {
+		return filepath.Clean(envThumbDir)
+	}
 	return filepath.Clean(defaultImageCacheDir)
 }
 
 func getThumbCacheDir() string {
-	// Keep backward compatibility: THUMB_DIR overrides the default location.
-	if envThumbDir := strings.TrimSpace(os.Getenv(thumbDirEnvName)); envThumbDir != "" {
-		return filepath.Clean(envThumbDir)
-	}
-	return filepath.Join(getImageCacheBaseDir(), "thumb")
+	return getImageCacheBaseDir()
 }
 
 func getDirectPhotoCachePath(messageID int) string {
-	return filepath.Join(getImageCacheBaseDir(), "direct", fmt.Sprintf("%d.jpg", messageID))
+	return filepath.Join(getImageCacheBaseDir(), fmt.Sprintf("%d.jpg", messageID))
 }
 
 func writeBytesAtomically(targetFile string, data []byte, perm os.FileMode) error {
