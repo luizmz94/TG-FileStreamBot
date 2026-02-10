@@ -52,6 +52,61 @@ def log(level: str, message: str) -> None:
     print(f"{ts()} [{level}] {message}", flush=True)
 
 
+def unquote_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def load_env_file(path: str, override: bool = False) -> int:
+    loaded = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            value = unquote_env_value(value)
+            if override or key not in os.environ:
+                os.environ[key] = value
+                loaded += 1
+    return loaded
+
+
+def discover_default_env_file() -> Optional[str]:
+    candidates: List[str] = []
+    explicit = os.getenv("STREAM_TEST_ENV_FILE", "").strip()
+    if explicit:
+        candidates.append(explicit)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.extend(
+        [
+            os.path.join(os.getcwd(), "fsb.env"),
+            os.path.join(script_dir, "..", "fsb.env"),
+            os.path.join(script_dir, "fsb.env"),
+        ]
+    )
+
+    seen = set()
+    for candidate in candidates:
+        normalized = os.path.abspath(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.isfile(normalized):
+            return normalized
+    return None
+
+
 @dataclass
 class RequestMetrics:
     status: Optional[int]
@@ -475,12 +530,19 @@ def probe_message(
 
 
 def main() -> int:
+    default_env_file = discover_default_env_file()
+
     parser = argparse.ArgumentParser(
         description="Test Firebase exchange + direct streaming with detailed chunk metrics."
     )
     parser.add_argument(
+        "--env-file",
+        default=default_env_file,
+        help="Optional env file to preload (default: auto-discover fsb.env)",
+    )
+    parser.add_argument(
         "--base-url",
-        default=os.getenv("STREAM_BASE_URL") or os.getenv("HOST") or "http://localhost:8000",
+        default=None,
         help="Base URL of stream server (default: STREAM_BASE_URL, HOST, or http://localhost:8000)",
     )
     parser.add_argument(
@@ -536,7 +598,16 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    base_url = normalize_base_url(args.base_url)
+    if args.env_file:
+        env_file_path = os.path.abspath(args.env_file)
+        if os.path.isfile(env_file_path):
+            loaded = load_env_file(env_file_path, override=False)
+            log("INFO", f"loaded {loaded} vars from env file: {env_file_path}")
+        else:
+            log("WARN", f"env file not found: {env_file_path}")
+
+    resolved_base_url = args.base_url or os.getenv("STREAM_BASE_URL") or os.getenv("HOST") or "http://localhost:8000"
+    base_url = normalize_base_url(resolved_base_url)
     messages = parse_message_ids(args.messages)
     firebase_token = os.getenv("FIREBASE_TOKEN", "").strip()
     if not firebase_token:

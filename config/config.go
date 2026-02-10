@@ -37,7 +37,6 @@ const (
 	defaultStreamSessionCookieName   string = "fsb_stream_session"
 	defaultStreamSessionCookieSec    bool   = true
 	defaultStreamSessionCookieDomain string = ""
-	defaultStreamAllowLegacyHMAC     bool   = true
 )
 
 var ValueOf = &config{
@@ -59,7 +58,6 @@ var ValueOf = &config{
 	StreamSessionCookieName:     defaultStreamSessionCookieName,
 	StreamSessionCookieSecure:   defaultStreamSessionCookieSec,
 	StreamSessionCookieDomain:   defaultStreamSessionCookieDomain,
-	StreamAllowLegacyHMAC:       defaultStreamAllowLegacyHMAC,
 }
 
 type allowedUsers []int64
@@ -95,18 +93,16 @@ type config struct {
 	UserSession               string       `envconfig:"USER_SESSION"`
 	UsePublicIP               bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
 	AllowedUsers              allowedUsers `envconfig:"ALLOWED_USERS"`
-	StreamSecret              string       `envconfig:"STREAM_SECRET"` // HMAC secret for /direct route authentication
 	WorkerStartTimeoutSeconds int          `envconfig:"WORKER_START_TIMEOUT_SECONDS" default:"120"`
 	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
-	FirebaseProjectID           string
-	FirebaseCertsURL            string
-	StreamSessionTTLSeconds     int // 8h
-	StreamSessionCleanupSeconds int
-	StreamSessionCookieName     string
-	StreamSessionCookieSecure   bool
-	StreamSessionCookieDomain   string
-	StreamAllowLegacyHMAC       bool
-	MultiTokens                 []string
+	FirebaseProjectID           string   `envconfig:"FIREBASE_PROJECT_ID" default:"mediatg-16cbb"`
+	FirebaseCertsURL            string   `envconfig:"FIREBASE_CERTS_URL" default:"https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"`
+	StreamSessionTTLSeconds     int      `envconfig:"STREAM_SESSION_TTL_SECONDS" default:"28800"` // 8h
+	StreamSessionCleanupSeconds int      `envconfig:"STREAM_SESSION_CLEANUP_SECONDS" default:"60"`
+	StreamSessionCookieName     string   `envconfig:"STREAM_SESSION_COOKIE_NAME" default:"fsb_stream_session"`
+	StreamSessionCookieSecure   bool     `envconfig:"STREAM_SESSION_COOKIE_SECURE" default:"true"`
+	StreamSessionCookieDomain   string   `envconfig:"STREAM_SESSION_COOKIE_DOMAIN" default:""`
+	MultiTokens                 []string `ignored:"true"`
 }
 
 var botTokenRegex = regexp.MustCompile(`MULTI\_TOKEN\d+=(.*)`)
@@ -268,8 +264,8 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	if ValueOf.FirebaseProjectID != "" {
 		log.Sugar().Infof("Firebase stream auth enabled for project: %s", ValueOf.FirebaseProjectID)
 	}
-	if ValueOf.FirebaseProjectID == "" && ValueOf.StreamSecret == "" {
-		log.Sugar().Warn("No stream auth configured. /direct route is publicly accessible.")
+	if ValueOf.FirebaseProjectID == "" {
+		log.Sugar().Warn("FIREBASE_PROJECT_ID not set. /direct route will reject requests.")
 	}
 }
 

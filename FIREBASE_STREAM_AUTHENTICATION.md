@@ -18,11 +18,16 @@ No Firebase verification happens on `/direct` requests.
 ## Environment variables
 
 ```env
-# Optional migration mode for old signed links
-STREAM_SECRET=your-existing-hmac-secret
+FIREBASE_PROJECT_ID=mediatg-16cbb
+FIREBASE_CERTS_URL=https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com
+STREAM_SESSION_TTL_SECONDS=28800
+STREAM_SESSION_CLEANUP_SECONDS=60
+STREAM_SESSION_COOKIE_NAME=fsb_stream_session
+STREAM_SESSION_COOKIE_SECURE=true
+STREAM_SESSION_COOKIE_DOMAIN=
 ```
 
-Non-secret values (`FIREBASE_PROJECT_ID`, session TTL, cookie name/flags, etc.) are now hardcoded in `config/config.go`.
+`/direct` now accepts only Firebase-exchanged stream session tokens (`st`, `x-stream-token`, bearer short token, or cookie).
 
 ## Quick test
 
