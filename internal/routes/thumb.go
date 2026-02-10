@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/celestix/gotgproto"
@@ -143,7 +144,8 @@ func (tf *ThumbnailFetcher) getThumbnail(ctx context.Context, messageID int) (st
 		document = doc
 
 		// Verify it's a video
-		if document.MimeType == "" || (document.MimeType[:5] != "video" && document.MimeType[:5] != "image") {
+		mime := strings.ToLower(document.MimeType)
+		if mime == "" || (!strings.HasPrefix(mime, "video/") && !strings.HasPrefix(mime, "image/")) {
 			return "", fmt.Errorf("unsupported media type for thumbnail: %s", document.MimeType)
 		}
 	default:
@@ -294,26 +296,48 @@ func getThumbnailRoute(logger *zap.Logger) gin.HandlerFunc {
 		fetcher := getThumbnailFetcher(logger)
 		thumbFile, err := fetcher.getThumbnail(ctx, messageID)
 		if err != nil {
-			logger.Error("Failed to fetch thumbnail", zap.Int("messageID", messageID), zap.Error(err))
-
-			// Return appropriate status code based on error
-			if err.Error() == "media not found" || err.Error() == "message not found" {
+			if isThumbnailNotAvailableError(err) {
+				logger.Warn("Thumbnail not available", zap.Int("messageID", messageID), zap.Error(err))
 				ctx.JSON(http.StatusNotFound, gin.H{
-					"error": "media not found",
+					"error": "thumbnail not available",
 				})
-			} else if err.Error() == "no thumbnail found in Telegram" {
-				ctx.JSON(http.StatusNotFound, gin.H{
-					"error": "no thumbnail found in Telegram",
-				})
-			} else {
-				ctx.JSON(http.StatusInternalServerError, gin.H{
-					"error": fmt.Sprintf("internal error: %v", err),
-				})
+				return
 			}
+
+			logger.Error("Failed to fetch thumbnail", zap.Int("messageID", messageID), zap.Error(err))
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("internal error: %v", err),
+			})
 			return
 		}
 
 		// Serve the thumbnail file
 		ctx.File(thumbFile)
 	}
+}
+
+// Some Telegram messages simply don't have a thumbnail (or are unsupported media types).
+// These are expected misses and should not be treated as server errors.
+func isThumbnailNotAvailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	knownMisses := []string{
+		"unsupported media type for thumbnail",
+		"no thumbnail found in telegram",
+		"no valid thumbnail found",
+		"message not found",
+		"message not found in channel",
+		"message was deleted or has no media",
+		"media not found",
+	}
+
+	for _, miss := range knownMisses {
+		if strings.Contains(errMsg, miss) {
+			return true
+		}
+	}
+	return false
 }

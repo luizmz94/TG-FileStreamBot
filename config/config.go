@@ -32,7 +32,7 @@ const (
 	defaultUsePublicIP               bool   = false
 	defaultFirebaseProjectID         string = "mediatg-16cbb"
 	defaultFirebaseCertsURL          string = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
-	defaultStreamSessionTTLSeconds   int    = 21600
+	defaultStreamSessionTTLSeconds   int    = 28800
 	defaultStreamSessionCleanupSecs  int    = 60
 	defaultStreamSessionCookieName   string = "fsb_stream_session"
 	defaultStreamSessionCookieSec    bool   = true
@@ -99,7 +99,7 @@ type config struct {
 	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
 	FirebaseProjectID           string
 	FirebaseCertsURL            string
-	StreamSessionTTLSeconds     int // 6h
+	StreamSessionTTLSeconds     int // 8h
 	StreamSessionCleanupSeconds int
 	StreamSessionCookieName     string
 	StreamSessionCookieSecure   bool
