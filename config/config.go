@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,7 +17,50 @@ import (
 	"go.uber.org/zap"
 )
 
-var ValueOf = &config{}
+const (
+	// Non-secret defaults (hardcoded in code as requested)
+	defaultAPIID                     int32  = 0
+	defaultLogChannelID              int64  = 0
+	defaultMediaChannelID            int64  = 0
+	defaultDev                       bool   = false
+	defaultLogLevel                  string = "info"
+	defaultPort                      int    = 8080
+	defaultStatusPort                int    = 9090
+	defaultHost                      string = ""
+	defaultHashLength                int    = 6
+	defaultUseSessionFile            bool   = true
+	defaultUsePublicIP               bool   = false
+	defaultFirebaseProjectID         string = "mediatg-16cbb"
+	defaultFirebaseCertsURL          string = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
+	defaultStreamSessionTTLSeconds   int    = 21600
+	defaultStreamSessionCleanupSecs  int    = 60
+	defaultStreamSessionCookieName   string = "fsb_stream_session"
+	defaultStreamSessionCookieSec    bool   = true
+	defaultStreamSessionCookieDomain string = ""
+	defaultStreamAllowLegacyHMAC     bool   = true
+)
+
+var ValueOf = &config{
+	ApiID:                       defaultAPIID,
+	LogChannelID:                defaultLogChannelID,
+	MediaChannelID:              defaultMediaChannelID,
+	Dev:                         defaultDev,
+	LogLevel:                    defaultLogLevel,
+	Port:                        defaultPort,
+	StatusPort:                  defaultStatusPort,
+	Host:                        defaultHost,
+	HashLength:                  defaultHashLength,
+	UseSessionFile:              defaultUseSessionFile,
+	UsePublicIP:                 defaultUsePublicIP,
+	FirebaseProjectID:           defaultFirebaseProjectID,
+	FirebaseCertsURL:            defaultFirebaseCertsURL,
+	StreamSessionTTLSeconds:     defaultStreamSessionTTLSeconds,
+	StreamSessionCleanupSeconds: defaultStreamSessionCleanupSecs,
+	StreamSessionCookieName:     defaultStreamSessionCookieName,
+	StreamSessionCookieSecure:   defaultStreamSessionCookieSec,
+	StreamSessionCookieDomain:   defaultStreamSessionCookieDomain,
+	StreamAllowLegacyHMAC:       defaultStreamAllowLegacyHMAC,
+}
 
 type allowedUsers []int64
 
@@ -54,7 +96,16 @@ type config struct {
 	UsePublicIP    bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
 	AllowedUsers   allowedUsers `envconfig:"ALLOWED_USERS"`
 	StreamSecret   string       `envconfig:"STREAM_SECRET"` // HMAC secret for /direct route authentication
-	MultiTokens    []string
+	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
+	FirebaseProjectID           string
+	FirebaseCertsURL            string
+	StreamSessionTTLSeconds     int // 6h
+	StreamSessionCleanupSeconds int
+	StreamSessionCookieName     string
+	StreamSessionCookieSecure   bool
+	StreamSessionCookieDomain   string
+	StreamAllowLegacyHMAC       bool
+	MultiTokens                 []string
 }
 
 var botTokenRegex = regexp.MustCompile(`MULTI\_TOKEN\d+=(.*)`)
@@ -91,54 +142,72 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 }
 
 func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
-	apiID, _ := cmd.Flags().GetInt32("api-id")
-	if apiID != 0 {
+	if cmd.Flags().Changed("api-id") {
+		apiID, _ := cmd.Flags().GetInt32("api-id")
 		os.Setenv("API_ID", strconv.Itoa(int(apiID)))
 	}
-	apiHash, _ := cmd.Flags().GetString("api-hash")
-	if apiHash != "" {
+	if cmd.Flags().Changed("api-hash") {
+		apiHash, _ := cmd.Flags().GetString("api-hash")
 		os.Setenv("API_HASH", apiHash)
 	}
-	botToken, _ := cmd.Flags().GetString("bot-token")
-	if botToken != "" {
+	if cmd.Flags().Changed("bot-token") {
+		botToken, _ := cmd.Flags().GetString("bot-token")
 		os.Setenv("BOT_TOKEN", botToken)
 	}
-	logChannelID, _ := cmd.Flags().GetString("log-channel")
-	if logChannelID != "" {
+	if cmd.Flags().Changed("log-channel") {
+		logChannelID, _ := cmd.Flags().GetString("log-channel")
 		os.Setenv("LOG_CHANNEL", logChannelID)
 	}
-	dev, _ := cmd.Flags().GetBool("dev")
-	if dev {
+	if cmd.Flags().Changed("dev") {
+		dev, _ := cmd.Flags().GetBool("dev")
 		os.Setenv("DEV", strconv.FormatBool(dev))
 	}
-	port, _ := cmd.Flags().GetInt("port")
-	if port != 0 {
+	if cmd.Flags().Changed("port") {
+		port, _ := cmd.Flags().GetInt("port")
 		os.Setenv("PORT", strconv.Itoa(port))
 	}
-	host, _ := cmd.Flags().GetString("host")
-	if host != "" {
+	if cmd.Flags().Changed("host") {
+		host, _ := cmd.Flags().GetString("host")
 		os.Setenv("HOST", host)
 	}
-	hashLength, _ := cmd.Flags().GetInt("hash-length")
-	if hashLength != 0 {
+	if cmd.Flags().Changed("hash-length") {
+		hashLength, _ := cmd.Flags().GetInt("hash-length")
 		os.Setenv("HASH_LENGTH", strconv.Itoa(hashLength))
 	}
-	useSessionFile, _ := cmd.Flags().GetBool("use-session-file")
-	if useSessionFile {
+	if cmd.Flags().Changed("use-session-file") {
+		useSessionFile, _ := cmd.Flags().GetBool("use-session-file")
 		os.Setenv("USE_SESSION_FILE", strconv.FormatBool(useSessionFile))
 	}
-	userSession, _ := cmd.Flags().GetString("user-session")
-	if userSession != "" {
+	if cmd.Flags().Changed("user-session") {
+		userSession, _ := cmd.Flags().GetString("user-session")
 		os.Setenv("USER_SESSION", userSession)
 	}
-	usePublicIP, _ := cmd.Flags().GetBool("use-public-ip")
-	if usePublicIP {
+	if cmd.Flags().Changed("use-public-ip") {
+		usePublicIP, _ := cmd.Flags().GetBool("use-public-ip")
 		os.Setenv("USE_PUBLIC_IP", strconv.FormatBool(usePublicIP))
 	}
+
 	multiTokens, _ := cmd.Flags().GetString("multi-token-txt-file")
 	if multiTokens != "" {
-		os.Setenv("MULTI_TOKEN_TXT_FILE", multiTokens)
-		// TODO: Add support for importing tokens from a separate file
+		log.Sugar().Warn("multi-token-txt-file is not implemented yet")
+	}
+}
+
+func (c *config) loadMultiTokensFromEnv() {
+	c.MultiTokens = c.MultiTokens[:0]
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, "MULTI_TOKEN") {
+			continue
+		}
+		match := botTokenRegex.FindStringSubmatch(env)
+		if len(match) != 2 {
+			continue
+		}
+		token := strings.TrimSpace(match[1])
+		if token == "" {
+			continue
+		}
+		c.MultiTokens = append(c.MultiTokens, token)
 	}
 }
 
@@ -149,6 +218,8 @@ func (c *config) setupEnvVars(log *zap.Logger, cmd *cobra.Command) {
 	if err != nil {
 		log.Fatal("Error while parsing env variables", zap.Error(err))
 	}
+	c.loadMultiTokensFromEnv()
+
 	var ipBlocked bool
 	ip, err := getIP(c.UsePublicIP)
 	if err != nil {
@@ -167,13 +238,6 @@ func (c *config) setupEnvVars(log *zap.Logger, cmd *cobra.Command) {
 		}
 		log.Sugar().Info("HOST not set, automatically set to " + c.Host)
 	}
-	val := reflect.ValueOf(c).Elem()
-	for _, env := range os.Environ() {
-		if strings.HasPrefix(env, "MULTI_TOKEN") {
-			c.MultiTokens = append(c.MultiTokens, botTokenRegex.FindStringSubmatch(env)[1])
-		}
-	}
-	val.FieldByName("MultiTokens").Set(reflect.ValueOf(c.MultiTokens))
 }
 
 func Load(log *zap.Logger, cmd *cobra.Command) {
@@ -199,6 +263,12 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	if ValueOf.HashLength < 5 {
 		log.Sugar().Info("HASH_LENGTH can't be less than 5, defaulting to 6")
 		ValueOf.HashLength = 6
+	}
+	if ValueOf.FirebaseProjectID != "" {
+		log.Sugar().Infof("Firebase stream auth enabled for project: %s", ValueOf.FirebaseProjectID)
+	}
+	if ValueOf.FirebaseProjectID == "" && ValueOf.StreamSecret == "" {
+		log.Sugar().Warn("No stream auth configured. /direct route is publicly accessible.")
 	}
 }
 

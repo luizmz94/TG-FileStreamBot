@@ -3,6 +3,7 @@ package routes
 import (
 	"EverythingSuckz/fsb/config"
 	"EverythingSuckz/fsb/internal/bot"
+	"EverythingSuckz/fsb/internal/streamauth"
 	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
 	"context"
@@ -73,7 +74,9 @@ func GetRequestLogs() []RequestLog {
 func (e *allRoutes) LoadDirect(r *Route) {
 	directLog := e.log.Named("DirectStream")
 	defer directLog.Info("Loaded direct stream route")
-	r.Engine.GET("/direct/:messageID", getDirectStreamRoute(directLog))
+	handler := getDirectStreamRoute(directLog, e.streamAuth)
+	r.Engine.GET("/direct/:messageID", handler)
+	r.Engine.HEAD("/direct/:messageID", handler)
 }
 
 // fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers.
@@ -224,7 +227,7 @@ func fetchFileWithRace(
 	return nil, nil, firstErr
 }
 
-func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
+func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		w := ctx.Writer
 		r := ctx.Request
@@ -249,12 +252,45 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		// Validate HMAC signature if STREAM_SECRET is configured
-		if config.ValueOf.StreamSecret != "" {
-			signature := ctx.Query("sig")
-			expiration := ctx.Query("exp")
+		// Smart auth flow:
+		// 1) If Firebase session auth is enabled, validate the local session token (fast in-memory check).
+		// 2) Optionally allow legacy HMAC links during migration.
+		if authService != nil && authService.Enabled() {
+			sessionToken := extractStreamSessionToken(ctx, authService.CookieName())
+			if sessionToken != "" {
+				session, valid := authService.ValidateSession(sessionToken)
+				if !valid {
+					logger.Warn("Stream session validation failed",
+						zap.Int("messageID", messageID),
+						zap.String("clientIP", ctx.ClientIP()))
+					ctx.JSON(http.StatusUnauthorized, gin.H{
+						"error": "unauthorized: invalid or expired stream session",
+					})
+					return
+				}
 
-			if err := utils.ValidateHMACSignature(config.ValueOf.StreamSecret, messageID, signature, expiration); err != nil {
+				logger.Debug("Authorized direct stream with Firebase session",
+					zap.Int("messageID", messageID),
+					zap.String("userID", session.UserID))
+			} else if config.ValueOf.StreamAllowLegacyHMAC && config.ValueOf.StreamSecret != "" {
+				if err := validateLegacyHMAC(ctx, messageID); err != nil {
+					logger.Warn("Legacy HMAC validation failed",
+						zap.Int("messageID", messageID),
+						zap.String("clientIP", ctx.ClientIP()),
+						zap.Error(err))
+					ctx.JSON(http.StatusUnauthorized, gin.H{
+						"error": "unauthorized: invalid or expired signature",
+					})
+					return
+				}
+			} else {
+				ctx.JSON(http.StatusUnauthorized, gin.H{
+					"error": "unauthorized: missing stream session token",
+				})
+				return
+			}
+		} else if config.ValueOf.StreamSecret != "" {
+			if err := validateLegacyHMAC(ctx, messageID); err != nil {
 				logger.Warn("HMAC validation failed",
 					zap.Int("messageID", messageID),
 					zap.String("clientIP", ctx.ClientIP()),
@@ -560,4 +596,37 @@ func getDirectStreamRoute(logger *zap.Logger) gin.HandlerFunc {
 				zap.Int64("bytesStreamed", bytesWritten))
 		}
 	}
+}
+
+func validateLegacyHMAC(ctx *gin.Context, messageID int) error {
+	signature := ctx.Query("sig")
+	expiration := ctx.Query("exp")
+	return utils.ValidateHMACSignature(config.ValueOf.StreamSecret, messageID, signature, expiration)
+}
+
+func extractStreamSessionToken(ctx *gin.Context, cookieName string) string {
+	queryToken := strings.TrimSpace(ctx.Query("st"))
+	if queryToken != "" {
+		return queryToken
+	}
+
+	headerToken := strings.TrimSpace(ctx.GetHeader("x-stream-token"))
+	if headerToken != "" {
+		return headerToken
+	}
+
+	authHeaderToken := extractBearerToken(ctx.GetHeader("Authorization"))
+	if authHeaderToken != "" {
+		return authHeaderToken
+	}
+
+	if cookieName == "" {
+		return ""
+	}
+
+	cookieToken, err := ctx.Cookie(cookieName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookieToken)
 }
