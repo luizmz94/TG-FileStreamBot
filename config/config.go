@@ -80,22 +80,23 @@ func (au *allowedUsers) Decode(value string) error {
 }
 
 type config struct {
-	ApiID          int32        `envconfig:"API_ID" required:"true"`
-	ApiHash        string       `envconfig:"API_HASH" required:"true"`
-	BotToken       string       `envconfig:"BOT_TOKEN" required:"true"`
-	LogChannelID   int64        `envconfig:"LOG_CHANNEL" required:"true"`
-	MediaChannelID int64        `envconfig:"MEDIA_CHANNEL_ID"`
-	Dev            bool         `envconfig:"DEV" default:"false"`
-	LogLevel       string       `envconfig:"LOG_LEVEL" default:"info"`
-	Port           int          `envconfig:"PORT" default:"8080"`
-	StatusPort     int          `envconfig:"STATUS_PORT" default:"9090"`
-	Host           string       `envconfig:"HOST" default:""`
-	HashLength     int          `envconfig:"HASH_LENGTH" default:"6"`
-	UseSessionFile bool         `envconfig:"USE_SESSION_FILE" default:"true"`
-	UserSession    string       `envconfig:"USER_SESSION"`
-	UsePublicIP    bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
-	AllowedUsers   allowedUsers `envconfig:"ALLOWED_USERS"`
-	StreamSecret   string       `envconfig:"STREAM_SECRET"` // HMAC secret for /direct route authentication
+	ApiID                     int32        `envconfig:"API_ID" required:"true"`
+	ApiHash                   string       `envconfig:"API_HASH" required:"true"`
+	BotToken                  string       `envconfig:"BOT_TOKEN" required:"true"`
+	LogChannelID              int64        `envconfig:"LOG_CHANNEL" required:"true"`
+	MediaChannelID            int64        `envconfig:"MEDIA_CHANNEL_ID"`
+	Dev                       bool         `envconfig:"DEV" default:"false"`
+	LogLevel                  string       `envconfig:"LOG_LEVEL" default:"info"`
+	Port                      int          `envconfig:"PORT" default:"8080"`
+	StatusPort                int          `envconfig:"STATUS_PORT" default:"9090"`
+	Host                      string       `envconfig:"HOST" default:""`
+	HashLength                int          `envconfig:"HASH_LENGTH" default:"6"`
+	UseSessionFile            bool         `envconfig:"USE_SESSION_FILE" default:"true"`
+	UserSession               string       `envconfig:"USER_SESSION"`
+	UsePublicIP               bool         `envconfig:"USE_PUBLIC_IP" default:"false"`
+	AllowedUsers              allowedUsers `envconfig:"ALLOWED_USERS"`
+	StreamSecret              string       `envconfig:"STREAM_SECRET"` // HMAC secret for /direct route authentication
+	WorkerStartTimeoutSeconds int          `envconfig:"WORKER_START_TIMEOUT_SECONDS" default:"120"`
 	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
 	FirebaseProjectID           string
 	FirebaseCertsURL            string

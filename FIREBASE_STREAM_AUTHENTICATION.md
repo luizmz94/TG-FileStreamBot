@@ -47,3 +47,5 @@ curl "https://your-stream-host/direct/123?st=<stream_token>"
 - Session tokens are stored in-memory (fast, O(1) lookup).
 - Restarting the service invalidates active stream sessions.
 - For horizontal scaling, use a shared store (e.g. Redis) for session tokens.
+- In Docker production with a `scratch` runtime, CA certificates must be present or Firebase exchange can fail with:
+  `x509: certificate signed by unknown authority`.
