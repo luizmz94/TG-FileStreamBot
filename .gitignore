@@ -34,5 +34,6 @@ logs/
 thumbnails_teste/
 cmd/fsb/__debug_*
 thumbnails/
+images/
 fsb
 fsb.env.production

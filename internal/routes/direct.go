@@ -6,10 +6,12 @@ import (
 	"EverythingSuckz/fsb/internal/streamauth"
 	"EverythingSuckz/fsb/internal/types"
 	"EverythingSuckz/fsb/internal/utils"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -416,11 +418,22 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 
 		// Handle photos (which have FileSize 0)
 		if file.FileSize == 0 {
-			res, err := selectedWorker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
-				Location: file.Location,
-				Offset:   0,
-				Limit:    1024 * 1024,
-			})
+			cacheFile := getDirectPhotoCachePath(messageID)
+			servedFromCache, cacheErr := serveDirectPhotoFromCache(ctx, cacheFile, file.MimeType, file.FileName)
+			if cacheErr != nil {
+				logger.Warn("Failed to serve cached direct photo, falling back to Telegram download",
+					zap.Int("messageID", messageID),
+					zap.String("cacheFile", cacheFile),
+					zap.Error(cacheErr))
+			}
+			if servedFromCache {
+				logger.Debug("Direct photo served from local cache",
+					zap.Int("messageID", messageID),
+					zap.String("cacheFile", cacheFile))
+				return
+			}
+
+			fileBytes, err := downloadPhotoBytes(bgCtx, selectedWorker.Client.API(), file.Location)
 			if err != nil {
 				// Check for FILE_REFERENCE_EXPIRED and retry for photos
 				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
@@ -439,11 +452,8 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 					}
 
 					// Retry with fresh file_reference
-					res, err = selectedWorker.Client.API().UploadGetFile(bgCtx, &tg.UploadGetFileRequest{
-						Location: freshFile.Location,
-						Offset:   0,
-						Limit:    1024 * 1024,
-					})
+					file = freshFile
+					fileBytes, err = downloadPhotoBytes(bgCtx, selectedWorker.Client.API(), freshFile.Location)
 					if err != nil {
 						logger.Error("Failed to get photo file after refetch", zap.Error(err))
 						ctx.JSON(http.StatusInternalServerError, gin.H{
@@ -459,19 +469,36 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 					return
 				}
 			}
-			result, ok := res.(*tg.UploadFile)
-			if !ok {
-				logger.Error("Unexpected response type for photo")
-				ctx.JSON(http.StatusInternalServerError, gin.H{
-					"error": "unexpected response",
-				})
+
+			if err := writeBytesAtomically(cacheFile, fileBytes, 0o644); err != nil {
+				logger.Warn("Failed to persist direct photo cache",
+					zap.Int("messageID", messageID),
+					zap.String("cacheFile", cacheFile),
+					zap.Error(err))
+			} else {
+				logger.Debug("Direct photo cached",
+					zap.Int("messageID", messageID),
+					zap.String("cacheFile", cacheFile),
+					zap.Int("bytes", len(fileBytes)))
+			}
+
+			mimeType := file.MimeType
+			if mimeType == "" {
+				mimeType = "image/jpeg"
+			}
+
+			headers := map[string]string{
+				"Content-Disposition": fmt.Sprintf("inline; filename=\"%s\"", file.FileName),
+			}
+			if r.Method == http.MethodHead {
+				ctx.Header("Content-Disposition", headers["Content-Disposition"])
+				ctx.Header("Content-Type", mimeType)
+				ctx.Header("Content-Length", strconv.Itoa(len(fileBytes)))
+				ctx.Status(http.StatusOK)
 				return
 			}
-			fileBytes := result.GetBytes()
-			ctx.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", file.FileName))
-			if r.Method != "HEAD" {
-				ctx.Data(http.StatusOK, file.MimeType, fileBytes)
-			}
+
+			ctx.DataFromReader(http.StatusOK, int64(len(fileBytes)), mimeType, bytes.NewReader(fileBytes), headers)
 			return
 		}
 
@@ -632,4 +659,79 @@ func extractStreamSessionToken(ctx *gin.Context, cookieName string) string {
 		return ""
 	}
 	return strings.TrimSpace(cookieToken)
+}
+
+func serveDirectPhotoFromCache(ctx *gin.Context, cacheFile, mimeType, fileName string) (bool, error) {
+	cacheInfo, err := os.Stat(cacheFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if cacheInfo.IsDir() || cacheInfo.Size() == 0 {
+		return false, nil
+	}
+
+	cacheHandle, err := os.Open(cacheFile)
+	if err != nil {
+		return false, err
+	}
+	defer cacheHandle.Close()
+
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	headers := map[string]string{
+		"Content-Disposition": fmt.Sprintf("inline; filename=\"%s\"", fileName),
+	}
+
+	if ctx.Request.Method == http.MethodHead {
+		ctx.Header("Content-Disposition", headers["Content-Disposition"])
+		ctx.Header("Content-Type", mimeType)
+		ctx.Header("Content-Length", strconv.FormatInt(cacheInfo.Size(), 10))
+		ctx.Status(http.StatusOK)
+		return true, nil
+	}
+
+	ctx.DataFromReader(http.StatusOK, cacheInfo.Size(), mimeType, cacheHandle, headers)
+	return true, nil
+}
+
+func downloadPhotoBytes(ctx context.Context, api *tg.Client, location tg.InputFileLocationClass) ([]byte, error) {
+	const chunkSize = 1024 * 1024
+
+	offset := int64(0)
+	photoBytes := make([]byte, 0, chunkSize)
+
+	for {
+		res, err := api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+			Location: location,
+			Offset:   offset,
+			Limit:    chunkSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		uploadFile, ok := res.(*tg.UploadFile)
+		if !ok {
+			return nil, fmt.Errorf("unexpected upload response type: %T", res)
+		}
+
+		chunk := uploadFile.GetBytes()
+		if len(chunk) == 0 {
+			break
+		}
+
+		photoBytes = append(photoBytes, chunk...)
+		if len(chunk) < chunkSize {
+			break
+		}
+
+		offset += int64(len(chunk))
+	}
+
+	return photoBytes, nil
 }

@@ -7,6 +7,8 @@ services:
       - stack.env
     ports:
       - 127.0.0.1:8001:8000
+    volumes:
+      - /home/downloader/thumbnails:/images
     networks:
       - mediatg
 

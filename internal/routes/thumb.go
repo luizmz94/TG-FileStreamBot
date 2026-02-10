@@ -248,12 +248,7 @@ func getThumbnailFetcher(logger *zap.Logger) *ThumbnailFetcher {
 		if worker == nil {
 			logger.Fatal("No default worker available for thumbnail fetching")
 		}
-		thumbDir := "./thumbnails"
-
-		// Check if THUMB_DIR is configured in environment
-		if envThumbDir := os.Getenv("THUMB_DIR"); envThumbDir != "" {
-			thumbDir = envThumbDir
-		}
+		thumbDir := getThumbCacheDir()
 
 		thumbnailFetcher = NewThumbnailFetcher(worker.Client, logger, thumbDir)
 	})
