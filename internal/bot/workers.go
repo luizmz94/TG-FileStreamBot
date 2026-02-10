@@ -294,13 +294,17 @@ func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 	var wg sync.WaitGroup
 	var successfulStarts int32
 	totalBots := len(config.ValueOf.MultiTokens)
+	workerStartTimeout := time.Duration(config.ValueOf.WorkerStartTimeoutSeconds) * time.Second
+	if workerStartTimeout <= 0 {
+		workerStartTimeout = 120 * time.Second
+	}
 
 	for i := 0; i < totalBots; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), workerStartTimeout)
 			defer cancel()
 
 			done := make(chan error, 1)
@@ -317,7 +321,9 @@ func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 					atomic.AddInt32(&successfulStarts, 1)
 				}
 			case <-ctx.Done():
-				Workers.log.Error("Timed out starting worker", zap.Int("index", i))
+				Workers.log.Error("Timed out starting worker",
+					zap.Int("index", i),
+					zap.Int("timeoutSeconds", int(workerStartTimeout.Seconds())))
 			}
 		}(i)
 	}
