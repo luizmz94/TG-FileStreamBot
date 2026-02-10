@@ -252,59 +252,57 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			return
 		}
 
-		// Smart auth flow:
-		// 1) If Firebase session auth is enabled, validate the local session token (fast in-memory check).
-		// 2) Optionally allow legacy HMAC links during migration.
-		if authService != nil && authService.Enabled() {
-			sessionToken := extractStreamSessionToken(ctx, authService.CookieName())
-			if sessionToken != "" {
-				session, valid := authService.ValidateSession(sessionToken)
-				if !valid {
-					logger.Warn("Stream session validation failed",
-						zap.Int("messageID", messageID),
-						zap.String("clientIP", ctx.ClientIP()))
-					ctx.JSON(http.StatusUnauthorized, gin.H{
-						"error": "unauthorized: invalid or expired stream session",
-					})
-					return
-				}
+		authMethod := "none"
+		rangeHeader := r.Header.Get("Range")
+		hasRangeHeader := rangeHeader != ""
 
-				logger.Debug("Authorized direct stream with Firebase session",
-					zap.Int("messageID", messageID),
-					zap.String("userID", session.UserID))
-			} else if config.ValueOf.StreamAllowLegacyHMAC && config.ValueOf.StreamSecret != "" {
-				if err := validateLegacyHMAC(ctx, messageID); err != nil {
-					logger.Warn("Legacy HMAC validation failed",
-						zap.Int("messageID", messageID),
-						zap.String("clientIP", ctx.ClientIP()),
-						zap.Error(err))
-					ctx.JSON(http.StatusUnauthorized, gin.H{
-						"error": "unauthorized: invalid or expired signature",
-					})
-					return
-				}
-			} else {
-				ctx.JSON(http.StatusUnauthorized, gin.H{
-					"error": "unauthorized: missing stream session token",
-				})
-				return
-			}
-		} else if config.ValueOf.StreamSecret != "" {
-			if err := validateLegacyHMAC(ctx, messageID); err != nil {
-				logger.Warn("HMAC validation failed",
-					zap.Int("messageID", messageID),
-					zap.String("clientIP", ctx.ClientIP()),
-					zap.Error(err))
-				ctx.JSON(http.StatusUnauthorized, gin.H{
-					"error": "unauthorized: invalid or expired signature",
-				})
-				return
-			}
+		// Firebase-only auth flow:
+		// 1) Client exchanges Firebase ID token for short-lived stream token.
+		// 2) /direct validates this stream session token.
+		if authService == nil || !authService.Enabled() {
+			logger.Error("Firebase stream auth is disabled; refusing direct stream request",
+				zap.Int("messageID", messageID),
+				zap.String("clientIP", ctx.ClientIP()))
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "stream authentication is not configured",
+			})
+			return
 		}
 
-		logger.Debug("Direct stream request",
+		sessionToken := extractStreamSessionToken(ctx, authService.CookieName())
+		if sessionToken == "" {
+			logger.Warn("Direct stream unauthorized: missing stream session token",
+				zap.Int("messageID", messageID),
+				zap.String("clientIP", ctx.ClientIP()))
+			ctx.JSON(http.StatusUnauthorized, gin.H{
+				"error": "unauthorized: missing stream session token",
+			})
+			return
+		}
+
+		session, valid := authService.ValidateSession(sessionToken)
+		if !valid {
+			logger.Warn("Stream session validation failed",
+				zap.Int("messageID", messageID),
+				zap.String("clientIP", ctx.ClientIP()))
+			ctx.JSON(http.StatusUnauthorized, gin.H{
+				"error": "unauthorized: invalid or expired stream session",
+			})
+			return
+		}
+		authMethod = "firebase_session"
+
+		logger.Debug("Authorized direct stream with Firebase session",
 			zap.Int("messageID", messageID),
-			zap.Int64("channelID", config.ValueOf.MediaChannelID))
+			zap.String("userID", session.UserID))
+
+		logger.Info("Direct stream request",
+			zap.Int("messageID", messageID),
+			zap.Int64("channelID", config.ValueOf.MediaChannelID),
+			zap.String("method", r.Method),
+			zap.Bool("hasRange", hasRangeHeader),
+			zap.String("authMethod", authMethod),
+			zap.String("clientIP", ctx.ClientIP()))
 
 		// Choose up to two workers and race them; fallback to others if needed
 		primaryWorker := bot.GetNextWorker()
@@ -396,6 +394,19 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			reqLog.Duration = time.Since(requestStartTime).Milliseconds()
 			reqLog.BytesSent = int64(w.Size())
 			AddRequestLog(reqLog)
+
+			if reqLog.StatusCode == http.StatusPartialContent || reqLog.StatusCode >= 400 {
+				logger.Info("Direct stream response",
+					zap.Int("messageID", reqLog.MessageID),
+					zap.Int("status", reqLog.StatusCode),
+					zap.Int64("rangeStart", reqLog.RangeStart),
+					zap.Int64("rangeEnd", reqLog.RangeEnd),
+					zap.Int64("bytesSent", reqLog.BytesSent),
+					zap.Int64("durationMs", reqLog.Duration),
+					zap.Int("workerID", reqLog.WorkerID),
+					zap.String("workerName", reqLog.WorkerName),
+					zap.String("authMethod", authMethod))
+			}
 		}()
 
 		logger.Debug("Using worker for request",
@@ -467,8 +478,6 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 		// Handle range requests for video/document streaming
 		ctx.Header("Accept-Ranges", "bytes")
 		var start, end int64
-		rangeHeader := r.Header.Get("Range")
-
 		if rangeHeader == "" {
 			start = 0
 			end = file.FileSize - 1
@@ -596,12 +605,6 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 				zap.Int64("bytesStreamed", bytesWritten))
 		}
 	}
-}
-
-func validateLegacyHMAC(ctx *gin.Context, messageID int) error {
-	signature := ctx.Query("sig")
-	expiration := ctx.Query("exp")
-	return utils.ValidateHMACSignature(config.ValueOf.StreamSecret, messageID, signature, expiration)
 }
 
 func extractStreamSessionToken(ctx *gin.Context, cookieName string) string {
