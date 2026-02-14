@@ -291,44 +291,96 @@ func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 		}
 	}
 
-	var wg sync.WaitGroup
-	var successfulStarts int32
 	totalBots := len(config.ValueOf.MultiTokens)
 	workerStartTimeout := time.Duration(config.ValueOf.WorkerStartTimeoutSeconds) * time.Second
 	if workerStartTimeout <= 0 {
 		workerStartTimeout = 120 * time.Second
 	}
 
-	for i := 0; i < totalBots; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+	const maxConcurrent = 3  // max simultaneous connections to Telegram
+	const maxRetries = 3     // max retry attempts per worker
+	const retryDelay = 5 * time.Second
 
-			ctx, cancel := context.WithTimeout(context.Background(), workerStartTimeout)
-			defer cancel()
-
-			done := make(chan error, 1)
-			go func() {
-				err := Workers.Add(config.ValueOf.MultiTokens[i])
-				done <- err
-			}()
-
-			select {
-			case err := <-done:
-				if err != nil {
-					Workers.log.Error("Failed to start worker", zap.Int("index", i), zap.Error(err))
-				} else {
-					atomic.AddInt32(&successfulStarts, 1)
-				}
-			case <-ctx.Done():
-				Workers.log.Error("Timed out starting worker",
-					zap.Int("index", i),
-					zap.Int("timeoutSeconds", int(workerStartTimeout.Seconds())))
-			}
-		}(i)
+	// Track which tokens failed so we can retry them
+	type workerResult struct {
+		index int
+		err   error
 	}
 
-	wg.Wait() // Wait for all goroutines to finish
+	startBatch := func(indices []int) []workerResult {
+		var wg sync.WaitGroup
+		results := make([]workerResult, len(indices))
+		sem := make(chan struct{}, maxConcurrent)
+
+		for j, idx := range indices {
+			wg.Add(1)
+			go func(j, idx int) {
+				defer wg.Done()
+				sem <- struct{}{}        // acquire semaphore
+				defer func() { <-sem }() // release semaphore
+
+				ctx, cancel := context.WithTimeout(context.Background(), workerStartTimeout)
+				defer cancel()
+
+				done := make(chan error, 1)
+				go func() {
+					done <- Workers.Add(config.ValueOf.MultiTokens[idx])
+				}()
+
+				select {
+				case err := <-done:
+					results[j] = workerResult{index: idx, err: err}
+				case <-ctx.Done():
+					results[j] = workerResult{index: idx, err: fmt.Errorf("timed out after %s", workerStartTimeout)}
+				}
+			}(j, idx)
+		}
+		wg.Wait()
+		return results
+	}
+
+	// Initial attempt: all workers
+	allIndices := make([]int, totalBots)
+	for i := range allIndices {
+		allIndices[i] = i
+	}
+
+	var successfulStarts int32
+	failedIndices := allIndices
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			Workers.log.Sugar().Infof("Retrying %d failed workers (attempt %d/%d) after %s delay...",
+				len(failedIndices), attempt, maxRetries, retryDelay)
+			time.Sleep(retryDelay)
+		}
+
+		results := startBatch(failedIndices)
+
+		var newFailed []int
+		for _, r := range results {
+			if r.err != nil {
+				Workers.log.Error("Failed to start worker",
+					zap.Int("index", r.index),
+					zap.Int("attempt", attempt+1),
+					zap.Error(r.err))
+				newFailed = append(newFailed, r.index)
+			} else {
+				atomic.AddInt32(&successfulStarts, 1)
+			}
+		}
+
+		failedIndices = newFailed
+		if len(failedIndices) == 0 {
+			break
+		}
+	}
+
+	if len(failedIndices) > 0 {
+		Workers.log.Sugar().Warnf("%d workers failed to start after %d retries: indices %v",
+			len(failedIndices), maxRetries, failedIndices)
+	}
+
 	Workers.log.Sugar().Infof("Successfully started %d/%d bots", successfulStarts, totalBots)
 	return Workers, nil
 }
