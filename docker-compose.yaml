@@ -1,14 +1,15 @@
 services:
   media-stream:
     image: luizmz94/tg-filestream-bot:latest
-    container_name: media_stream_new
+    container_name: media_stream
     restart: unless-stopped
     env_file:
       - stack.env
     ports:
       - 127.0.0.1:8001:8000
     volumes:
-      - /home/downloader/thumbnails:/images
+      - /home/downloader/photos:/images
+      - /home/downloader/sessions:/app/sessions
     networks:
       - mediatg
 
