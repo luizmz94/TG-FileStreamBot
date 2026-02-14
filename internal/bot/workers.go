@@ -297,8 +297,8 @@ func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 		workerStartTimeout = 120 * time.Second
 	}
 
-	const maxConcurrent = 3  // max simultaneous connections to Telegram
-	const maxRetries = 3     // max retry attempts per worker
+	const maxConcurrent = 3 // max simultaneous connections to Telegram
+	const maxRetries = 3    // max retry attempts per worker
 	const retryDelay = 5 * time.Second
 
 	// Track which tokens failed so we can retry them
