@@ -37,3 +37,4 @@ thumbnails/
 images/
 fsb
 fsb.env.production
+scripts/__pycache__/test_concurrent_performance.cpython-313.pyc
