@@ -403,16 +403,16 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			AddRequestLog(reqLog)
 
 			if reqLog.StatusCode == http.StatusPartialContent || reqLog.StatusCode >= 400 {
-				logger.Info("Direct stream response",
-					zap.Int("messageID", reqLog.MessageID),
+				logger.Info("Direct",
+					zap.Int("msgId", reqLog.MessageID),
 					zap.Int("status", reqLog.StatusCode),
-					zap.Int64("rangeStart", reqLog.RangeStart),
-					zap.Int64("rangeEnd", reqLog.RangeEnd),
-					zap.Int64("bytesSent", reqLog.BytesSent),
-					zap.Int64("durationMs", reqLog.Duration),
-					zap.Int("workerID", reqLog.WorkerID),
-					zap.String("workerName", reqLog.WorkerName),
-					zap.String("authMethod", authMethod))
+					zap.Int64("rgst", reqLog.RangeStart),
+					zap.Int64("rgEnd", reqLog.RangeEnd),
+					zap.Int64("bSent", reqLog.BytesSent),
+					zap.Int64("durMs", reqLog.Duration),
+					zap.Int("wkID", reqLog.WorkerID),
+					zap.String("wkN", reqLog.WorkerName),
+					zap.String("auth", authMethod))
 			}
 		}()
 

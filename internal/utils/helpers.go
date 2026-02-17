@@ -12,9 +12,18 @@ import (
 	"github.com/celestix/gotgproto"
 	"github.com/celestix/gotgproto/ext"
 	"github.com/celestix/gotgproto/storage"
+	"github.com/gotd/td/constant"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
+
+// toBotAPIChannelID converts a raw Telegram channel ID to BotAPI-style ID (-100<id>).
+// gotgproto beta22+ stores peers using BotAPI-format keys, so lookups must use this format.
+func toBotAPIChannelID(rawChannelID int64) int64 {
+	var id constant.TDLibPeerID
+	id.Channel(rawChannelID)
+	return int64(id)
+}
 
 // https://stackoverflow.com/a/70802740/15807350
 func Contains[T comparable](s []T, e T) bool {
@@ -215,9 +224,13 @@ func GetLogChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage
 // This is a generic version of GetLogChannelPeer that works with any channel
 // Uses PeerStorage as an in-memory cache to avoid repeated API calls
 func GetChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage, channelID int64) (*tg.InputChannel, error) {
+	// Convert to BotAPI-style ID for PeerStorage lookup
+	// gotgproto beta22+ stores channel peers at -100<id> keys
+	botAPIID := toBotAPIChannelID(channelID)
+
 	// Check PeerStorage first (acts as in-memory cache)
 	// Once a channel is accessed, it stays in PeerStorage for the session lifetime
-	cachedInputPeer := peerStorage.GetInputPeerById(channelID)
+	cachedInputPeer := peerStorage.GetInputPeerById(botAPIID)
 
 	switch peer := cachedInputPeer.(type) {
 	case *tg.InputPeerEmpty:
