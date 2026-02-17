@@ -306,7 +306,9 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			zap.String("authMethod", authMethod),
 			zap.String("clientIP", ctx.ClientIP()))
 
-		// Choose up to two workers and race them; fallback to others if needed
+		// Choose worker strategy based on current load:
+		// - Low load (worker has <2 active reqs): single worker (saves capacity)
+		// - High load: race two workers for faster TTFB
 		primaryWorker := bot.GetNextWorker()
 		if primaryWorker == nil {
 			logger.Error("No workers available")
@@ -318,9 +320,12 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 		workerPool := []*bot.Worker{primaryWorker}
 		seenWorkerIDs := []int{primaryWorker.ID}
 
-		if secondary := bot.GetNextWorkerExcluding(seenWorkerIDs); secondary != nil {
-			workerPool = append(workerPool, secondary)
-			seenWorkerIDs = append(seenWorkerIDs, secondary.ID)
+		// Only race a second worker if the primary is already busy
+		if primaryWorker.GetActiveRequests() >= 2 {
+			if secondary := bot.GetNextWorkerExcluding(seenWorkerIDs); secondary != nil {
+				workerPool = append(workerPool, secondary)
+				seenWorkerIDs = append(seenWorkerIDs, secondary.ID)
+			}
 		}
 
 		// Track this request
