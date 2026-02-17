@@ -10,7 +10,7 @@ Flow:
 5) Prints a summary table with performance analysis per media and overall.
 
 Usage:
-    python scripts/test_concurrent_performance.py --base-url https://your-server.com
+    python scripts/test_concurrent_performance.py
 
 Dependencies: Python 3.8+ stdlib only (no pip install needed).
 """
@@ -29,10 +29,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Media IDs extracted from production logs
@@ -48,6 +48,21 @@ DEFAULT_MESSAGE_IDS = [
 
 # Firebase Web API key – needed for signInWithPassword REST endpoint.
 DEFAULT_FIREBASE_API_KEY = "REMOVED_FIREBASE_API_KEY"
+
+# Default URL shown at execution time (user can override interactively).
+DEFAULT_BASE_URL = "https://streamer.mediatg.com"
+
+# Fixed benchmark profile (intentionally hardcoded for comparable runs).
+FIXED_CHUNK_SIZE = 1 * 1024 * 1024
+FIXED_NUM_CHUNKS = 5
+FIXED_CONCURRENCY = 12
+FIXED_SAME_MEDIA_REQUESTS = 10
+FIXED_TIMEOUT_SECONDS = 120.0
+FIXED_ROUNDS = 3
+FIXED_TESTS = ["sequential", "burst", "multi_chunk", "same_media", "ramp_up"]
+
+# Where result files are stored by default.
+DEFAULT_RESULTS_DIR = "scripts"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,6 +82,58 @@ def log(level: str, message: str) -> None:
 
 def hr(char: str = "─", width: int = 100) -> str:
     return char * width
+
+
+def sanitize_filename_part(value: str) -> str:
+    out = []
+    for ch in value.lower():
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("-")
+    cleaned = "".join(out).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned or "unknown"
+
+
+def prompt_base_url(default_url: str) -> str:
+    prompt = f"Base URL [{default_url}]: "
+    typed = input(prompt).strip()
+    base_url = typed or default_url
+    return base_url.rstrip("/")
+
+
+def make_results_path(base_url: str, results_dir: str = DEFAULT_RESULTS_DIR) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.netloc or parsed.path or "unknown"
+    host_tag = sanitize_filename_part(host)
+    timeout_tag = int(FIXED_TIMEOUT_SECONDS)
+
+    prefix = (
+        f"baseline_{host_tag}"
+        f"_cs{FIXED_CHUNK_SIZE}"
+        f"_c{FIXED_CONCURRENCY}"
+        f"_r{FIXED_ROUNDS}"
+        f"_nc{FIXED_NUM_CHUNKS}"
+        f"_sm{FIXED_SAME_MEDIA_REQUESTS}"
+        f"_t{timeout_tag}"
+    )
+
+    os.makedirs(results_dir, exist_ok=True)
+    max_seq = 0
+    for name in os.listdir(results_dir):
+        if not name.startswith(prefix + "_seq") or not name.endswith(".json"):
+            continue
+        seq_str = name[len(prefix) + 4 : -5]
+        try:
+            seq = int(seq_str)
+            max_seq = max(max_seq, seq)
+        except ValueError:
+            continue
+
+    next_seq = max_seq + 1
+    return os.path.join(results_dir, f"{prefix}_seq{next_seq:03d}.json")
 
 
 # ---------------------------------------------------------------------------
@@ -765,18 +832,16 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/test_concurrent_performance.py --base-url https://stream.example.com
-  python scripts/test_concurrent_performance.py --base-url http://localhost:8080 --concurrency 10
-  python scripts/test_concurrent_performance.py --base-url https://stream.example.com --messages 479688,479689 --chunk-size 2097152
-  python scripts/test_concurrent_performance.py --base-url http://localhost:8080 --tests sequential,burst,multi_chunk,same_media
+  python scripts/test_concurrent_performance.py
+  python scripts/test_concurrent_performance.py --base-url http://localhost:8000
+  python scripts/test_concurrent_performance.py --messages 479688,479689
         """,
     )
 
     parser.add_argument(
         "--base-url",
         default=None,
-        help="Base URL of the stream server (e.g. https://stream.example.com). "
-             "Falls back to STREAM_BASE_URL or HOST env vars.",
+        help="Optional default base URL used as prefilled value in the prompt.",
     )
     parser.add_argument(
         "--firebase-api-key",
@@ -794,56 +859,10 @@ Examples:
         help=f"Comma-separated message IDs (default: {','.join(str(m) for m in DEFAULT_MESSAGE_IDS)})",
     )
     parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=1 * 1024 * 1024,
-        help="Chunk size in bytes for range requests (default: 1MB)",
-    )
-    parser.add_argument(
-        "--num-chunks",
-        type=int,
-        default=3,
-        help="Number of chunks per media in multi_chunk test (default: 3)",
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=7,
-        help="Max concurrent requests (default: 7 = one per media)",
-    )
-    parser.add_argument(
-        "--same-media-requests",
-        type=int,
-        default=5,
-        help="Number of concurrent requests to same media in same_media test (default: 5)",
-    )
-    parser.add_argument(
         "--same-media-id",
         type=int,
         default=None,
         help="Specific message_id for same_media test (default: first in --messages list)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=60.0,
-        help="HTTP timeout in seconds (default: 60)",
-    )
-    parser.add_argument(
-        "--tests",
-        default="sequential,burst,multi_chunk,same_media,ramp_up",
-        help="Comma-separated test names: sequential, burst, multi_chunk, same_media, ramp_up (default: all)",
-    )
-    parser.add_argument(
-        "--rounds",
-        type=int,
-        default=1,
-        help="Number of rounds to repeat the burst test (default: 1)",
-    )
-    parser.add_argument(
-        "--save",
-        default=None,
-        help="Save results to JSON file for later comparison (e.g. --save baseline.json)",
     )
     parser.add_argument(
         "--insecure",
@@ -859,16 +878,21 @@ Examples:
         loaded = load_env_file(env_file)
         log("INFO", f"Loaded {loaded} vars from {env_file}")
 
-    # Resolve base URL
-    base_url = (
-        args.base_url
-        or os.getenv("STREAM_BASE_URL")
-        or os.getenv("HOST")
-        or ""
-    ).rstrip("/")
+    # Resolve URL default and ask interactively every run
+    default_base_url = (args.base_url or DEFAULT_BASE_URL).rstrip("/")
+    if not default_base_url:
+        default_base_url = DEFAULT_BASE_URL
+
+    print(f"\n{hr('═')}")
+    print("  TARGET SERVER")
+    print(hr("═"))
+    base_url = prompt_base_url(default_base_url)
     if not base_url:
-        log("ERROR", "No --base-url provided and no STREAM_BASE_URL/HOST env var found.")
+        log("ERROR", "Base URL is required.")
         return 2
+    if "://" not in base_url:
+        base_url = "http://" + base_url
+    log("INFO", f"Target URL: {base_url}")
 
     # Resolve Firebase API key
     firebase_api_key = (
@@ -888,10 +912,28 @@ Examples:
         log("ERROR", "No message IDs provided.")
         return 2
 
-    # Parse test names
-    test_names = [t.strip().lower() for t in args.tests.split(",") if t.strip()]
+    # Fixed benchmark profile (kept constant to preserve comparability)
+    chunk_size = FIXED_CHUNK_SIZE
+    num_chunks = FIXED_NUM_CHUNKS
+    concurrency = FIXED_CONCURRENCY
+    same_media_requests = FIXED_SAME_MEDIA_REQUESTS
+    timeout_s = FIXED_TIMEOUT_SECONDS
+    rounds = FIXED_ROUNDS
+    test_names = FIXED_TESTS[:]
+    same_media_target_id = args.same_media_id or message_ids[0]
 
     ssl_context = make_ssl_context(args.insecure)
+
+    print(f"\n{hr('═')}")
+    print("  FIXED TEST PROFILE")
+    print(hr("═"))
+    print(f"  chunk_size={chunk_size} bytes")
+    print(f"  concurrency={concurrency}")
+    print(f"  rounds={rounds}")
+    print(f"  num_chunks={num_chunks}")
+    print(f"  same_media_requests={same_media_requests}")
+    print(f"  timeout={timeout_s:.0f}s")
+    print(f"  tests={','.join(test_names)}")
 
     # ── Firebase authentication ──
     print(f"\n{hr('═')}")
@@ -919,7 +961,7 @@ Examples:
     # ── Exchange for stream token ──
     try:
         stream_token, expires_at = exchange_stream_token(
-            base_url, firebase_token, args.timeout, ssl_context
+            base_url, firebase_token, timeout_s, ssl_context
         )
         if expires_at:
             remaining = max(0, int(expires_at) - int(time.time()))
@@ -936,7 +978,7 @@ Examples:
     media_infos: Dict[int, MediaInfo] = {}
     for mid in message_ids:
         try:
-            info = probe_media_size(base_url, mid, stream_token, args.timeout, ssl_context)
+            info = probe_media_size(base_url, mid, stream_token, timeout_s, ssl_context)
             media_infos[mid] = info
             size_text = format_bytes(info.total_size) if info.total_size else "unknown"
             log("PROBE", f"message_id={mid}  size={size_text}  type={info.content_type}")
@@ -950,69 +992,69 @@ Examples:
     # Test 1: Sequential (baseline)
     if "sequential" in test_names:
         print(f"\n{hr('═')}")
-        print(f"  TEST 1: SEQUENTIAL (one request at a time, first {format_bytes(args.chunk_size)} of each media)")
+        print(f"  TEST 1: SEQUENTIAL (one request at a time, first {format_bytes(chunk_size)} of each media)")
         print(hr("═"))
 
         seq_results = run_sequential_test(
             base_url, message_ids, stream_token,
-            args.chunk_size, args.timeout, ssl_context,
+            chunk_size, timeout_s, ssl_context,
         )
         all_results.extend(seq_results)
 
     # Test 2: Concurrent burst
     if "burst" in test_names:
-        for round_num in range(1, args.rounds + 1):
-            round_label = f"burst_r{round_num}" if args.rounds > 1 else "burst"
+        for round_num in range(1, rounds + 1):
+            round_label = f"burst_r{round_num}" if rounds > 1 else "burst"
             print(f"\n{hr('═')}")
             print(
                 f"  TEST 2: CONCURRENT BURST (all {len(message_ids)} media at once, "
-                f"concurrency={args.concurrency})"
-                + (f"  round {round_num}/{args.rounds}" if args.rounds > 1 else "")
+                f"concurrency={concurrency})"
+                + (f"  round {round_num}/{rounds}" if rounds > 1 else "")
             )
             print(hr("═"))
 
             burst_results = run_concurrent_burst(
                 base_url, message_ids, stream_token,
-                args.chunk_size, args.concurrency, args.timeout, ssl_context,
+                chunk_size, concurrency, timeout_s, ssl_context,
                 label=round_label,
             )
             all_results.extend(burst_results)
 
-            if round_num < args.rounds:
+            if round_num < rounds:
                 time.sleep(1)  # brief pause between rounds
 
     # Test 3: Multi-chunk concurrent
     if "multi_chunk" in test_names:
         print(f"\n{hr('═')}")
         print(
-            f"  TEST 3: MULTI-CHUNK ({args.num_chunks} chunks × {len(message_ids)} media, "
-            f"concurrency={args.concurrency})"
+            f"  TEST 3: MULTI-CHUNK ({num_chunks} chunks × {len(message_ids)} media, "
+            f"concurrency={concurrency})"
         )
         print(hr("═"))
 
         mc_results = run_concurrent_multi_chunk(
             base_url, message_ids, stream_token,
-            args.chunk_size, args.num_chunks, args.concurrency,
-            args.timeout, ssl_context, media_infos,
+            chunk_size, num_chunks, concurrency,
+            timeout_s, ssl_context, media_infos,
         )
         all_results.extend(mc_results)
 
     # Test 4: Same media hammered
     if "same_media" in test_names:
-        target_mid = args.same_media_id or message_ids[0]
+        target_mid = same_media_target_id
         target_info = media_infos.get(target_mid)
         total = target_info.total_size if target_info else None
         print(f"\n{hr('═')}")
         print(
             f"  TEST 4: SAME MEDIA HAMMER (message_id={target_mid}, "
-            f"{args.same_media_requests} concurrent requests at different offsets)"
+            f"{same_media_requests} concurrent requests at different offsets)"
         )
         print(hr("═"))
 
         sm_results = run_same_media_concurrent(
             base_url, target_mid, stream_token,
-            args.chunk_size, args.same_media_requests, args.concurrency,
-            args.timeout, ssl_context, total,
+            chunk_size, same_media_requests, concurrency,
+            timeout_s, ssl_context, total,
         )
         all_results.extend(sm_results)
 
@@ -1020,56 +1062,66 @@ Examples:
     if "ramp_up" in test_names:
         print(f"\n{hr('═')}")
         print(
-            f"  TEST 5: RAMP-UP (gradually increase concurrency 1→{args.concurrency}, "
+            f"  TEST 5: RAMP-UP (gradually increase concurrency 1→{concurrency}, "
             f"using {len(message_ids)} media)"
         )
         print(hr('═'))
 
         ramp_results = run_ramp_up(
             base_url, message_ids, stream_token,
-            args.chunk_size, args.concurrency, args.timeout, ssl_context,
+            chunk_size, concurrency, timeout_s, ssl_context,
         )
         all_results.extend(ramp_results)
 
     # ── Summary ──
     print_summary(all_results, media_infos)
 
-    # ── Save results to JSON ──
-    if args.save:
-        save_path = args.save
-        save_data = {
-            "timestamp": datetime.now().isoformat(),
-            "base_url": base_url,
-            "chunk_size": args.chunk_size,
-            "concurrency": args.concurrency,
-            "num_messages": len(message_ids),
-            "message_ids": message_ids,
-            "tests_run": test_names,
-            "media_info": {
-                str(mid): {
-                    "total_size": info.total_size,
-                    "content_type": info.content_type,
-                } for mid, info in media_infos.items()
-            },
-            "results": [
-                {
-                    "message_id": r.message_id,
-                    "test_label": r.test_label,
-                    "range_spec": r.range_spec,
-                    "status": r.status,
-                    "bytes_read": r.bytes_read,
-                    "expected_bytes": r.expected_bytes,
-                    "elapsed_s": round(r.elapsed_s, 4),
-                    "ttfb_s": round(r.ttfb_s, 4) if r.ttfb_s else None,
-                    "throughput_mbps": round(r.throughput_mbps, 4),
-                    "error": r.error,
-                }
-                for r in all_results
-            ],
-        }
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(save_data, f, indent=2, ensure_ascii=False)
-        log("SAVE", f"Results saved to {save_path}")
+    # ── Save results to JSON (auto sequential path) ──
+    save_path = make_results_path(base_url)
+    save_data = {
+        "timestamp": datetime.now().isoformat(),
+        "base_url": base_url,
+        "chunk_size": chunk_size,
+        "concurrency": concurrency,
+        "num_messages": len(message_ids),
+        "message_ids": message_ids,
+        "tests_run": test_names,
+        "test_profile": {
+            "fixed": True,
+            "chunk_size": chunk_size,
+            "concurrency": concurrency,
+            "rounds": rounds,
+            "num_chunks": num_chunks,
+            "same_media_requests": same_media_requests,
+            "timeout_seconds": timeout_s,
+            "same_media_id": same_media_target_id,
+            "tests": test_names,
+        },
+        "media_info": {
+            str(mid): {
+                "total_size": info.total_size,
+                "content_type": info.content_type,
+            } for mid, info in media_infos.items()
+        },
+        "results": [
+            {
+                "message_id": r.message_id,
+                "test_label": r.test_label,
+                "range_spec": r.range_spec,
+                "status": r.status,
+                "bytes_read": r.bytes_read,
+                "expected_bytes": r.expected_bytes,
+                "elapsed_s": round(r.elapsed_s, 4),
+                "ttfb_s": round(r.ttfb_s, 4) if r.ttfb_s else None,
+                "throughput_mbps": round(r.throughput_mbps, 4),
+                "error": r.error,
+            }
+            for r in all_results
+        ],
+    }
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(save_data, f, indent=2, ensure_ascii=False)
+    log("SAVE", f"Results saved to {save_path}")
 
     failed_count = sum(1 for r in all_results if r.status not in (200, 206) or r.error is not None)
     return 0 if failed_count == 0 else 1
