@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/celestix/gotgproto"
 	"github.com/gotd/td/tg"
@@ -23,6 +24,12 @@ type telegramReader struct {
 	chunkSize     int64
 	i             int64
 	contentLength int64
+
+	// Read-ahead: prefetch next chunk while current one is being consumed
+	prefetchOnce sync.Once
+	prefetchBuf  []byte
+	prefetchErr  error
+	prefetchDone chan struct{}
 }
 
 func (*telegramReader) Close() error {
@@ -53,6 +60,15 @@ func NewTelegramReader(
 	return r, nil
 }
 
+// startPrefetch kicks off an async fetch of the next chunk
+func (r *telegramReader) startPrefetch() {
+	r.prefetchDone = make(chan struct{})
+	go func() {
+		r.prefetchBuf, r.prefetchErr = r.next()
+		close(r.prefetchDone)
+	}()
+}
+
 func (r *telegramReader) Read(p []byte) (n int, err error) {
 
 	if r.bytesread == r.contentLength {
@@ -61,7 +77,19 @@ func (r *telegramReader) Read(p []byte) (n int, err error) {
 	}
 
 	if r.i >= int64(len(r.buffer)) {
-		r.buffer, err = r.next()
+		// If we have a prefetch in flight, wait for it
+		if r.prefetchDone != nil {
+			<-r.prefetchDone
+			r.buffer = r.prefetchBuf
+			err = r.prefetchErr
+			r.prefetchBuf = nil
+			r.prefetchErr = nil
+			r.prefetchDone = nil
+			r.prefetchOnce = sync.Once{}
+		} else {
+			r.buffer, err = r.next()
+		}
+
 		r.log.Debug("Next Buffer", zap.Int64("len", int64(len(r.buffer))))
 		if err != nil {
 			return 0, err
@@ -72,13 +100,25 @@ func (r *telegramReader) Read(p []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			}
-
 		}
 		r.i = 0
+
+		// Start prefetching the next chunk while this one is being consumed
+		r.prefetchOnce.Do(func() {
+			r.startPrefetch()
+		})
 	}
 	n = copy(p, r.buffer[r.i:])
 	r.i += int64(n)
 	r.bytesread += int64(n)
+
+	// If we've consumed most of the current buffer, ensure prefetch is running
+	if r.prefetchDone == nil && r.i >= int64(len(r.buffer))/2 {
+		r.prefetchOnce.Do(func() {
+			r.startPrefetch()
+		})
+	}
+
 	return n, nil
 }
 

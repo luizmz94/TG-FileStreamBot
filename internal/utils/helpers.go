@@ -130,12 +130,22 @@ func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID in
 // This function is designed for direct streaming without using the internal hash/DB system
 // It retrieves the message from the specified channel and extracts the file information
 //
-// IMPORTANT: Does NOT cache file_reference as it expires quickly (5-10 minutes)
-// Always fetches fresh metadata from Telegram API to avoid FILE_REFERENCE_EXPIRED errors
+// Uses short-TTL cache (4 minutes) since file_reference typically lasts ~60 minutes.
+// On FILE_REFERENCE_EXPIRED, the caller should use RefetchFileFromMessageAndChannel
+// which bypasses the cache.
 func FileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*types.File, error) {
 	log := Logger.Named("GetMessageMediaFromChannel")
 
-	// Always fetch fresh from Telegram - no caching due to file_reference expiration
+	// Check cache first (short TTL to balance performance vs file_reference freshness)
+	cacheKey := fmt.Sprintf("direct:%d:%d:%d", channelID, messageID, client.Self.ID)
+	var cachedFile types.File
+	if err := cache.GetCache().Get(cacheKey, &cachedFile); err == nil {
+		log.Debug("Using cached file metadata for direct stream",
+			zap.Int("messageID", messageID),
+			zap.Int64("clientID", client.Self.ID))
+		return &cachedFile, nil
+	}
+
 	log.Debug("Fetching fresh file metadata from Telegram API",
 		zap.Int64("channelID", channelID),
 		zap.Int("messageID", messageID),
@@ -168,26 +178,32 @@ func FileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, ch
 		return nil, fmt.Errorf("failed to extract file from message: %w", err)
 	}
 
-	// DO NOT CACHE file_reference as it expires quickly (5-10 minutes)
-	// Caching causes FILE_REFERENCE_EXPIRED errors during streaming
-	// Always fetch fresh metadata from Telegram for each request
-	log.Debug("✅ File metadata fetched (not cached due to file_reference expiration)",
+	// Cache for 4 minutes — file_reference lasts ~60 min, so this is safe.
+	// Dramatically reduces Telegram API calls under concurrent access.
+	if cacheErr := cache.GetCache().Set(cacheKey, file, 240); cacheErr != nil {
+		log.Warn("Failed to cache direct file metadata", zap.Error(cacheErr))
+	}
+
+	log.Debug("File metadata fetched and cached (TTL=4m)",
 		zap.String("fileName", file.FileName),
 		zap.Int64("fileSize", file.FileSize))
 
 	return file, nil
 }
 
-// RefetchFileFromMessageAndChannel fetches fresh file metadata
-// This is used when FILE_REFERENCE_EXPIRED error occurs during streaming
-// Since we don't cache file_reference anymore, this is essentially the same as FileFromMessageAndChannel
+// RefetchFileFromMessageAndChannel fetches fresh file metadata bypassing cache.
+// This is used when FILE_REFERENCE_EXPIRED error occurs during streaming.
 func RefetchFileFromMessageAndChannel(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*types.File, error) {
 	log := Logger.Named("RefetchFile")
 	log.Info("Refetching file metadata due to FILE_REFERENCE_EXPIRED",
 		zap.Int64("channelID", channelID),
 		zap.Int("messageID", messageID))
 
-	// Just call the main function - no cache to invalidate
+	// Invalidate cached entry first
+	cacheKey := fmt.Sprintf("direct:%d:%d:%d", channelID, messageID, client.Self.ID)
+	_ = cache.GetCache().Delete(cacheKey)
+
+	// Fetch fresh from Telegram (FileFromMessageAndChannel will re-cache it)
 	return FileFromMessageAndChannel(ctx, client, channelID, messageID)
 }
 
