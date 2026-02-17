@@ -38,3 +38,5 @@ images/
 fsb
 fsb.env.production
 scripts/__pycache__/test_concurrent_performance.cpython-313.pyc
+# Generated concurrent benchmark outputs (auto-sequential)
+scripts/baseline_*_cs*_c*_r*_nc*_sm*_t*_seq*.json
