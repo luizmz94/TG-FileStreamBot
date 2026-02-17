@@ -41,10 +41,21 @@ type RequestLog struct {
 	Referer    string    `json:"referer"`
 }
 
+const (
+	metadataFetchTimeout         = 5 * time.Second
+	secondaryRaceActiveThreshold = int32(6)
+	streamCopyBufferSize         = 256 * 1024
+)
+
 // Global request log storage (circular buffer for last 300 requests)
 var (
 	requestLogs     = make([]RequestLog, 0, 300)
 	requestLogMutex sync.RWMutex
+	streamCopyPool  = sync.Pool{
+		New: func() any {
+			return make([]byte, streamCopyBufferSize)
+		},
+	}
 )
 
 // AddRequestLog adds a new request log entry, maintaining only the last 300
@@ -103,8 +114,13 @@ func fetchFileWithRetry(
 	}
 
 	tryOnce := func(ctx context.Context, w *bot.Worker) result {
-		// bound each attempt to 5s to avoid hanging on a single bot
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// Mark metadata fetch as active load so worker selection accounts
+		// for in-flight pre-stream work under concurrency.
+		w.AcquireSlot()
+		defer w.ReleaseSlot()
+
+		// Bound each attempt to avoid hanging on a single bot.
+		ctx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
 		defer cancel()
 		file, err := utils.FileFromMessageAndChannel(ctx, w.Client, channelID, messageID)
 		return result{file: file, err: err, w: w}
@@ -193,7 +209,10 @@ func fetchFileWithRace(
 	for _, w := range workers {
 		worker := w
 		go func() {
-			attemptCtx, attemptCancel := context.WithTimeout(ctx, 5*time.Second)
+			worker.AcquireSlot()
+			defer worker.ReleaseSlot()
+
+			attemptCtx, attemptCancel := context.WithTimeout(ctx, metadataFetchTimeout)
 			defer attemptCancel()
 
 			file, err := utils.FileFromMessageAndChannel(attemptCtx, worker.Client, channelID, messageID)
@@ -209,7 +228,7 @@ func fetchFileWithRace(
 			if res.err == nil && res.file != nil {
 				// cancel other attempts; they will exit because of context cancellation
 				cancel()
-				logger.Info("Race winner",
+				logger.Debug("Race winner",
 					zap.Int("workerID", res.worker.ID),
 					zap.String("workerUsername", res.worker.Self.Username))
 				return res.file, res.worker, nil
@@ -298,7 +317,7 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			zap.Int("messageID", messageID),
 			zap.String("userID", session.UserID))
 
-		logger.Info("Direct stream request",
+		logger.Debug("Direct stream request",
 			zap.Int("messageID", messageID),
 			zap.Int64("channelID", config.ValueOf.MediaChannelID),
 			zap.String("method", r.Method),
@@ -307,8 +326,8 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			zap.String("clientIP", ctx.ClientIP()))
 
 		// Choose worker strategy based on current load:
-		// - Low load (worker has <2 active reqs): single worker (saves capacity)
-		// - High load: race two workers for faster TTFB
+		// - Normal load: single worker (saves Telegram API calls/capacity)
+		// - High load: race two workers for better tail-latency
 		primaryWorker := bot.GetNextWorker()
 		if primaryWorker == nil {
 			logger.Error("No workers available")
@@ -321,7 +340,7 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 		seenWorkerIDs := []int{primaryWorker.ID}
 
 		// Only race a second worker if the primary is already busy
-		if primaryWorker.GetActiveRequests() >= 2 {
+		if primaryWorker.GetActiveRequests() >= secondaryRaceActiveThreshold {
 			if secondary := bot.GetNextWorkerExcluding(seenWorkerIDs); secondary != nil {
 				workerPool = append(workerPool, secondary)
 				seenWorkerIDs = append(seenWorkerIDs, secondary.ID)
@@ -402,8 +421,19 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			reqLog.BytesSent = int64(w.Size())
 			AddRequestLog(reqLog)
 
-			if reqLog.StatusCode == http.StatusPartialContent || reqLog.StatusCode >= 400 {
-				logger.Info("Direct",
+			if reqLog.StatusCode >= http.StatusBadRequest {
+				logger.Warn("Direct",
+					zap.Int("msgId", reqLog.MessageID),
+					zap.Int("status", reqLog.StatusCode),
+					zap.Int64("rgst", reqLog.RangeStart),
+					zap.Int64("rgEnd", reqLog.RangeEnd),
+					zap.Int64("bSent", reqLog.BytesSent),
+					zap.Int64("durMs", reqLog.Duration),
+					zap.Int("wkID", reqLog.WorkerID),
+					zap.String("wkN", reqLog.WorkerName),
+					zap.String("auth", authMethod))
+			} else if logger.Core().Enabled(zap.DebugLevel) {
+				logger.Debug("Direct",
 					zap.Int("msgId", reqLog.MessageID),
 					zap.Int("status", reqLog.StatusCode),
 					zap.Int64("rgst", reqLog.RangeStart),
@@ -568,7 +598,7 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 				return
 			}
 
-			bytesWritten, err := io.CopyN(w, lr, contentLength)
+			bytesWritten, err := copyStreamWithBuffer(w, lr, contentLength)
 			if err != nil {
 				// Check if the error is due to client disconnection
 				if ctx.Request.Context().Err() != nil {
@@ -606,7 +636,7 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 						return
 					}
 
-					bytesWritten2, err2 := io.CopyN(w, lr2, contentLength)
+					bytesWritten2, err2 := copyStreamWithBuffer(w, lr2, contentLength)
 					if err2 != nil {
 						logger.Error("Error while copying stream after refetch",
 							zap.Int("messageID", messageID),
@@ -637,6 +667,25 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 				zap.Int64("bytesStreamed", bytesWritten))
 		}
 	}
+}
+
+// copyStreamWithBuffer reduces per-request allocations/syscalls compared to
+// io.CopyN default buffering in this hot path.
+func copyStreamWithBuffer(dst io.Writer, src io.Reader, n int64) (int64, error) {
+	buf, _ := streamCopyPool.Get().([]byte)
+	if len(buf) == 0 {
+		buf = make([]byte, streamCopyBufferSize)
+	}
+	defer streamCopyPool.Put(buf)
+
+	written, err := io.CopyBuffer(dst, io.LimitReader(src, n), buf)
+	if err != nil {
+		return written, err
+	}
+	if written != n {
+		return written, io.ErrUnexpectedEOF
+	}
+	return written, nil
 }
 
 func extractStreamSessionToken(ctx *gin.Context, cookieName string) string {

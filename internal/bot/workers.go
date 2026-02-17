@@ -42,9 +42,21 @@ func (w *Worker) String() string {
 	return fmt.Sprintf("{Worker (%d|@%s)}", w.ID, w.Self.Username)
 }
 
+// AcquireSlot increments the active request counter without affecting totals.
+// Useful for short internal operations (e.g. metadata fetch) that should still
+// participate in load balancing decisions.
+func (w *Worker) AcquireSlot() {
+	atomic.AddInt32(&w.metrics.ActiveRequests, 1)
+}
+
+// ReleaseSlot decrements the active request counter without recording metrics.
+func (w *Worker) ReleaseSlot() {
+	atomic.AddInt32(&w.metrics.ActiveRequests, -1)
+}
+
 // StartRequest increments the active request counter
 func (w *Worker) StartRequest() {
-	atomic.AddInt32(&w.metrics.ActiveRequests, 1)
+	w.AcquireSlot()
 	atomic.AddInt64(&w.metrics.TotalRequests, 1)
 	w.metricsMutex.Lock()
 	w.metrics.LastRequestTime = time.Now()
@@ -53,7 +65,7 @@ func (w *Worker) StartRequest() {
 
 // EndRequest decrements the active request counter and records response time
 func (w *Worker) EndRequest(startTime time.Time, failed bool) {
-	atomic.AddInt32(&w.metrics.ActiveRequests, -1)
+	w.ReleaseSlot()
 
 	duration := time.Since(startTime).Milliseconds()
 	atomic.AddInt64(&w.metrics.TotalResponseTime, duration)
