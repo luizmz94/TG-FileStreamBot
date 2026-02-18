@@ -42,9 +42,8 @@ type RequestLog struct {
 }
 
 const (
-	metadataFetchTimeout         = 5 * time.Second
-	secondaryRaceActiveThreshold = int32(6)
-	streamCopyBufferSize         = 256 * 1024
+	metadataFetchTimeout = 5 * time.Second
+	streamCopyBufferSize = 256 * 1024
 )
 
 // Global request log storage (circular buffer for last 300 requests)
@@ -325,9 +324,13 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 			zap.String("authMethod", authMethod),
 			zap.String("clientIP", ctx.ClientIP()))
 
-		// Choose worker strategy based on current load:
-		// - Normal load: single worker (saves Telegram API calls/capacity)
-		// - High load: race two workers for better tail-latency
+		// Race metadata fetch across a configurable number of workers.
+		// First successful response wins and is used for streaming.
+		raceWorkers := config.ValueOf.DirectRaceWorkers
+		if raceWorkers < 1 {
+			raceWorkers = 1
+		}
+
 		primaryWorker := bot.GetNextWorker()
 		if primaryWorker == nil {
 			logger.Error("No workers available")
@@ -339,13 +342,18 @@ func getDirectStreamRoute(logger *zap.Logger, authService *streamauth.Service) g
 		workerPool := []*bot.Worker{primaryWorker}
 		seenWorkerIDs := []int{primaryWorker.ID}
 
-		// Only race a second worker if the primary is already busy
-		if primaryWorker.GetActiveRequests() >= secondaryRaceActiveThreshold {
-			if secondary := bot.GetNextWorkerExcluding(seenWorkerIDs); secondary != nil {
-				workerPool = append(workerPool, secondary)
-				seenWorkerIDs = append(seenWorkerIDs, secondary.ID)
+		for len(workerPool) < raceWorkers {
+			nextWorker := bot.GetNextWorkerExcluding(seenWorkerIDs)
+			if nextWorker == nil {
+				break
 			}
+			workerPool = append(workerPool, nextWorker)
+			seenWorkerIDs = append(seenWorkerIDs, nextWorker.ID)
 		}
+
+		logger.Debug("Worker race pool prepared",
+			zap.Int("requestedRaceWorkers", raceWorkers),
+			zap.Int("selectedRaceWorkers", len(workerPool)))
 
 		// Track this request
 		requestStartTime := time.Now()

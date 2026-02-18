@@ -37,6 +37,7 @@ const (
 	defaultStreamSessionCookieName   string = "fsb_stream_session"
 	defaultStreamSessionCookieSec    bool   = true
 	defaultStreamSessionCookieDomain string = ""
+	defaultDirectRaceWorkers         int    = 2
 )
 
 var ValueOf = &config{
@@ -58,6 +59,7 @@ var ValueOf = &config{
 	StreamSessionCookieName:     defaultStreamSessionCookieName,
 	StreamSessionCookieSecure:   defaultStreamSessionCookieSec,
 	StreamSessionCookieDomain:   defaultStreamSessionCookieDomain,
+	DirectRaceWorkers:           defaultDirectRaceWorkers,
 }
 
 type allowedUsers []int64
@@ -102,6 +104,7 @@ type config struct {
 	StreamSessionCookieName     string   `envconfig:"STREAM_SESSION_COOKIE_NAME" default:"fsb_stream_session"`
 	StreamSessionCookieSecure   bool     `envconfig:"STREAM_SESSION_COOKIE_SECURE" default:"true"`
 	StreamSessionCookieDomain   string   `envconfig:"STREAM_SESSION_COOKIE_DOMAIN" default:""`
+	DirectRaceWorkers           int      `envconfig:"DIRECT_RACE_WORKERS" default:"2"`
 	MultiTokens                 []string `ignored:"true"`
 }
 
@@ -260,6 +263,10 @@ func Load(log *zap.Logger, cmd *cobra.Command) {
 	if ValueOf.HashLength < 5 {
 		log.Sugar().Info("HASH_LENGTH can't be less than 5, defaulting to 6")
 		ValueOf.HashLength = 6
+	}
+	if ValueOf.DirectRaceWorkers < 1 {
+		log.Sugar().Warn("DIRECT_RACE_WORKERS must be >= 1, defaulting to 1")
+		ValueOf.DirectRaceWorkers = 1
 	}
 	if ValueOf.FirebaseProjectID != "" {
 		log.Sugar().Infof("Firebase stream auth enabled for project: %s", ValueOf.FirebaseProjectID)
