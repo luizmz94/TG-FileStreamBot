@@ -46,8 +46,8 @@ DEFAULT_MESSAGE_IDS = [
     439974, 439975,
 ]
 
-# Firebase Web API key – needed for signInWithPassword REST endpoint.
-DEFAULT_FIREBASE_API_KEY = "REMOVED_FIREBASE_API_KEY"
+# Firebase Web API key is intentionally not hardcoded.
+# Provide via --firebase-api-key, FIREBASE_API_KEY env var, or interactive prompt.
 
 # Default URL shown at execution time (user can override interactively).
 DEFAULT_BASE_URL = "https://streamer.mediatg.com"
@@ -895,11 +895,7 @@ Examples:
     log("INFO", f"Target URL: {base_url}")
 
     # Resolve Firebase API key
-    firebase_api_key = (
-        args.firebase_api_key
-        or os.getenv("FIREBASE_API_KEY")
-        or DEFAULT_FIREBASE_API_KEY
-    )
+    firebase_api_key = args.firebase_api_key or os.getenv("FIREBASE_API_KEY")
     if not firebase_api_key:
         firebase_api_key = input("Firebase Web API Key: ").strip()
     if not firebase_api_key:
