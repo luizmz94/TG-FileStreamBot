@@ -5,11 +5,23 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+// wantsHTML reports whether the client is asking for the HTML dashboard.
+// Default is JSON; HTML is served only on an explicit ?format=html query or an
+// Accept header that actually requests text/html (e.g. a browser). This avoids
+// returning HTML to programmatic JSON consumers.
+func wantsHTML(ctx *gin.Context) bool {
+	if ctx.Query("format") == "html" {
+		return true
+	}
+	return strings.Contains(ctx.GetHeader("Accept"), "text/html")
+}
 
 // LoadStatus registers the status monitoring route
 // This route provides real-time metrics for all workers including load, uptime, and performance
@@ -25,10 +37,13 @@ type WorkerStatus struct {
 	ActiveRequests    int32   `json:"active_requests"`
 	TotalRequests     int64   `json:"total_requests"`
 	FailedRequests    int64   `json:"failed_requests"`
-	SuccessRate       float64 `json:"success_rate"`
-	AverageResponseMs float64 `json:"average_response_ms"`
-	UptimeSeconds     int64   `json:"uptime_seconds"`
-	LastRequestAgo    string  `json:"last_request_ago"`
+	SuccessRate         float64 `json:"success_rate"`
+	AverageResponseMs   float64 `json:"average_response_ms"`
+	UptimeSeconds       int64   `json:"uptime_seconds"`
+	LastRequestAgo      string  `json:"last_request_ago"`
+	MetadataFailures    int64   `json:"metadata_failures"`
+	ConsecutiveFailures int32   `json:"consecutive_failures"`
+	RacesLost           int64   `json:"races_lost"`
 }
 
 type StatusResponse struct {
@@ -46,7 +61,7 @@ func getStatusRoute(logger *zap.Logger) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if bot.Workers == nil || len(bot.Workers.Bots) == 0 {
 			// Check if request wants HTML
-			if ctx.GetHeader("Accept") == "text/html" || ctx.Query("format") == "html" {
+			if wantsHTML(ctx) {
 				ctx.Data(http.StatusOK, "text/html; charset=utf-8", []byte(getNoWorkersHTML()))
 				return
 			}
@@ -100,10 +115,13 @@ func getStatusRoute(logger *zap.Logger) gin.HandlerFunc {
 				ActiveRequests:    metrics.ActiveRequests,
 				TotalRequests:     metrics.TotalRequests,
 				FailedRequests:    metrics.FailedRequests,
-				SuccessRate:       successRate,
-				AverageResponseMs: worker.GetAverageResponseTime(),
-				UptimeSeconds:     int64(uptime),
-				LastRequestAgo:    lastRequestAgo,
+				SuccessRate:         successRate,
+				AverageResponseMs:   worker.GetAverageResponseTime(),
+				UptimeSeconds:       int64(uptime),
+				LastRequestAgo:      lastRequestAgo,
+				MetadataFailures:    metrics.MetadataFailures,
+				ConsecutiveFailures: metrics.ConsecutiveFailures,
+				RacesLost:           metrics.RacesLost,
 			})
 		}
 
@@ -128,12 +146,8 @@ func getStatusRoute(logger *zap.Logger) gin.HandlerFunc {
 			Timestamp:          now,
 		}
 
-		// Check if browser is requesting (wants HTML)
-		acceptHeader := ctx.GetHeader("Accept")
-		if ctx.Query("format") == "html" || (acceptHeader != "" &&
-			(ctx.GetHeader("Accept") == "text/html" ||
-				ctx.GetHeader("User-Agent") != "" && len(acceptHeader) > 0)) {
-			// Return HTML table view
+		// Serve the HTML dashboard only when explicitly requested; default JSON.
+		if wantsHTML(ctx) {
 			htmlContent := generateStatusHTML(response)
 			ctx.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlContent))
 			return
@@ -213,6 +227,17 @@ func generateStatusHTML(response StatusResponse) string {
 		// Format uptime
 		uptimeStr := formatUptime(worker.UptimeSeconds)
 
+		// Fetch health: red while a worker is currently failing channel access,
+		// yellow if it failed before but has since recovered, green if clean.
+		fetchHealth := "🟢"
+		if worker.ConsecutiveFailures > 0 {
+			fetchHealth = fmt.Sprintf("🔴 %d now / %d total", worker.ConsecutiveFailures, worker.MetadataFailures)
+		} else if worker.MetadataFailures > 0 {
+			fetchHealth = fmt.Sprintf("🟡 %d total", worker.MetadataFailures)
+		} else if worker.TotalRequests == 0 && worker.RacesLost > 0 {
+			fetchHealth = fmt.Sprintf("🔵 idle (lost %d races)", worker.RacesLost)
+		}
+
 		workerRows += fmt.Sprintf(`
 		<tr class="%s">
 			<td><strong>#%d</strong></td>
@@ -221,12 +246,13 @@ func generateStatusHTML(response StatusResponse) string {
 			<td>%d</td>
 			<td>%d</td>
 			<td class="success-rate">%.1f%%</td>
+			<td>%s</td>
 			<td>%.0f ms</td>
 			<td>%s</td>
 			<td>%s</td>
 		</tr>`, statusClass, worker.ID, statusIcon, worker.Username,
 			worker.ActiveRequests, worker.TotalRequests, worker.FailedRequests,
-			worker.SuccessRate, worker.AverageResponseMs, uptimeStr, worker.LastRequestAgo)
+			worker.SuccessRate, fetchHealth, worker.AverageResponseMs, uptimeStr, worker.LastRequestAgo)
 	}
 
 	// Generate request log rows (reverse order - newest first)
@@ -538,6 +564,7 @@ func generateStatusHTML(response StatusResponse) string {
 						<th>Total</th>
 						<th>Failed</th>
 						<th>Success Rate</th>
+						<th>Fetch Health</th>
 						<th>Avg Response (Last 5)</th>
 						<th>Uptime</th>
 						<th>Last Request</th>

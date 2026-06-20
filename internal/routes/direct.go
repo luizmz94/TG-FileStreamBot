@@ -8,6 +8,7 @@ import (
 	"EverythingSuckz/fsb/internal/utils"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,6 +92,31 @@ func (e *allRoutes) LoadDirect(r *Route) {
 	r.Engine.HEAD("/direct/:messageID", handler)
 }
 
+// recordFetchHealth updates a worker's health counters based on a metadata
+// fetch outcome. A nil error (or a confirmed "message not present") means the
+// bot reached the channel fine, so its consecutive-failure streak is cleared.
+// A context cancellation (e.g. a race sibling already won) is ignored — it is
+// not a health signal. Any other error counts as a real metadata failure and
+// deprioritizes the worker in load balancing.
+func recordFetchHealth(w *bot.Worker, err error) {
+	if err == nil {
+		w.RecordFetchSuccess()
+		return
+	}
+	if msg := err.Error(); msg == "message not found in channel" ||
+		msg == "message was deleted or is not accessible" {
+		w.RecordFetchSuccess()
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		// Cancelled because a faster worker already won the race — not a health
+		// signal, but worth counting so idle-but-fine workers aren't invisible.
+		w.RecordRaceLost()
+		return
+	}
+	w.RecordFetchFailure()
+}
+
 // fetchFileWithRetry attempts to fetch file with timeout and automatic retry using different workers.
 // It returns both the file metadata and the worker that produced it so we can stream using
 // the same bot account (file_reference is tied to the bot).
@@ -122,6 +148,7 @@ func fetchFileWithRetry(
 		ctx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
 		defer cancel()
 		file, err := utils.FileFromMessageAndChannel(ctx, w.Client, channelID, messageID)
+		recordFetchHealth(w, err)
 		return result{file: file, err: err, w: w}
 	}
 
@@ -215,6 +242,7 @@ func fetchFileWithRace(
 			defer attemptCancel()
 
 			file, err := utils.FileFromMessageAndChannel(attemptCtx, worker.Client, channelID, messageID)
+			recordFetchHealth(worker, err)
 			// Use buffered channel to avoid goroutine leak if caller returns early
 			results <- result{file: file, worker: worker, err: err}
 		}()

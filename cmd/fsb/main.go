@@ -26,6 +26,7 @@ func init() {
 	config.SetFlagsFromConfig(runCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(sessionCmd)
+	rootCmd.AddCommand(healthCheckCmd)
 	rootCmd.SetVersionTemplate(fmt.Sprintf(`Telegram File Stream Bot version %s`, versionString))
 }
 

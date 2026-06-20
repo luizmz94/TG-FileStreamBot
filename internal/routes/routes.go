@@ -63,4 +63,5 @@ func LoadStatusOnly(log *zap.Logger, r *gin.Engine) {
 	route.Init(r)
 	allRoutes := &allRoutes{log: log}
 	allRoutes.LoadStatus(route)
+	allRoutes.LoadHealth(route)
 }

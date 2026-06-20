@@ -216,6 +216,16 @@ func RefetchFileFromMessageAndChannel(ctx context.Context, client *gotgproto.Cli
 	return FileFromMessageAndChannel(ctx, client, channelID, messageID)
 }
 
+// ProbeFileFromChannel fetches message metadata while bypassing the cache, for
+// active health checks. It actively exercises the bot's channel access on every
+// call (unlike the cached path) but, unlike RefetchFileFromMessageAndChannel,
+// does not log a misleading FILE_REFERENCE_EXPIRED reason.
+func ProbeFileFromChannel(ctx context.Context, client *gotgproto.Client, channelID int64, messageID int) (*types.File, error) {
+	cacheKey := fmt.Sprintf("direct:%d:%d:%d", channelID, messageID, client.Self.ID)
+	_ = cache.GetCache().Delete(cacheKey)
+	return FileFromMessageAndChannel(ctx, client, channelID, messageID)
+}
+
 func GetLogChannelPeer(ctx context.Context, api *tg.Client, peerStorage *storage.PeerStorage) (*tg.InputChannel, error) {
 	return GetChannelPeer(ctx, api, peerStorage, config.ValueOf.LogChannelID)
 }

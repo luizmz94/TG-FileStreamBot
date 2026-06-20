@@ -35,7 +35,7 @@ thumbnails_teste/
 cmd/fsb/__debug_*
 thumbnails/
 images/
-fsb
+/fsb
 fsb.env.production
 scripts/__pycache__/test_concurrent_performance.cpython-313.pyc
 # Generated concurrent benchmark outputs (auto-sequential)

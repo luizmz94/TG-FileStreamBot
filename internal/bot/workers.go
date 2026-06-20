@@ -18,13 +18,16 @@ import (
 )
 
 type WorkerMetrics struct {
-	ActiveRequests    int32     // Current active requests
-	TotalRequests     int64     // Total requests handled
-	FailedRequests    int64     // Total failed requests
-	TotalResponseTime int64     // Total response time in milliseconds
-	StartTime         time.Time // When the worker started
-	LastRequestTime   time.Time // Last request timestamp
-	Last5Times        []int64   // Last 5 response times in milliseconds
+	ActiveRequests      int32     // Current active requests
+	TotalRequests       int64     // Total requests handled
+	FailedRequests      int64     // Total failed requests
+	TotalResponseTime   int64     // Total response time in milliseconds
+	StartTime           time.Time // When the worker started
+	LastRequestTime     time.Time // Last request timestamp
+	Last5Times          []int64   // Last 5 response times in milliseconds
+	MetadataFailures    int64     // Total metadata/channel-access fetch failures (lifetime)
+	ConsecutiveFailures int32     // Consecutive metadata fetch failures; reset on any success
+	RacesLost           int64     // Metadata races this worker entered but lost (cancelled by a faster bot)
 }
 
 type Worker struct {
@@ -92,18 +95,79 @@ func (w *Worker) GetActiveRequests() int32 {
 	return atomic.LoadInt32(&w.metrics.ActiveRequests)
 }
 
+// unhealthyFailureCap bounds how much a degraded worker is penalized so a bot
+// that recovers (one success) immediately rejoins normal rotation.
+const unhealthyFailureCap = 5
+
+// unhealthyWeight is the load-balancing score penalty per consecutive metadata
+// failure (capped). It is large enough to push a failing bot behind healthy
+// idle bots, but does NOT hard-exclude it — under load it can still be retried
+// and self-heal. This only affects worker *selection*, never the stream path.
+const unhealthyWeight = 50000
+
+// RecordFetchSuccess clears the consecutive-failure counter after a worker
+// successfully reaches the channel (or confirms the message simply isn't there).
+func (w *Worker) RecordFetchSuccess() {
+	atomic.StoreInt32(&w.metrics.ConsecutiveFailures, 0)
+}
+
+// RecordFetchFailure records a metadata/channel-access failure for this worker.
+// It increments both the lifetime counter and the consecutive-failure counter
+// used to deprioritize the worker in load balancing.
+func (w *Worker) RecordFetchFailure() {
+	atomic.AddInt64(&w.metrics.MetadataFailures, 1)
+	atomic.AddInt32(&w.metrics.ConsecutiveFailures, 1)
+}
+
+// GetConsecutiveFailures returns the current consecutive metadata-failure count.
+func (w *Worker) GetConsecutiveFailures() int32 {
+	return atomic.LoadInt32(&w.metrics.ConsecutiveFailures)
+}
+
+// GetMetadataFailures returns the lifetime metadata-failure count.
+func (w *Worker) GetMetadataFailures() int64 {
+	return atomic.LoadInt64(&w.metrics.MetadataFailures)
+}
+
+// RecordRaceLost records that this worker entered a metadata race but a faster
+// worker won first (its attempt was cancelled). This is not a failure, but it
+// explains workers that stay idle with zero served requests.
+func (w *Worker) RecordRaceLost() {
+	atomic.AddInt64(&w.metrics.RacesLost, 1)
+}
+
+// GetRacesLost returns how many metadata races this worker lost.
+func (w *Worker) GetRacesLost() int64 {
+	return atomic.LoadInt64(&w.metrics.RacesLost)
+}
+
+// unhealthyPenalty returns the load-balancing score penalty for this worker.
+func (w *Worker) unhealthyPenalty() float64 {
+	cf := atomic.LoadInt32(&w.metrics.ConsecutiveFailures)
+	if cf <= 0 {
+		return 0
+	}
+	if cf > unhealthyFailureCap {
+		cf = unhealthyFailureCap
+	}
+	return float64(cf) * unhealthyWeight
+}
+
 // GetMetrics returns a copy of the current metrics
 func (w *Worker) GetMetrics() WorkerMetrics {
 	w.metricsMutex.RLock()
 	defer w.metricsMutex.RUnlock()
 
 	return WorkerMetrics{
-		ActiveRequests:    atomic.LoadInt32(&w.metrics.ActiveRequests),
-		TotalRequests:     atomic.LoadInt64(&w.metrics.TotalRequests),
-		FailedRequests:    atomic.LoadInt64(&w.metrics.FailedRequests),
-		TotalResponseTime: atomic.LoadInt64(&w.metrics.TotalResponseTime),
-		StartTime:         w.metrics.StartTime,
-		LastRequestTime:   w.metrics.LastRequestTime,
+		ActiveRequests:      atomic.LoadInt32(&w.metrics.ActiveRequests),
+		TotalRequests:       atomic.LoadInt64(&w.metrics.TotalRequests),
+		FailedRequests:      atomic.LoadInt64(&w.metrics.FailedRequests),
+		TotalResponseTime:   atomic.LoadInt64(&w.metrics.TotalResponseTime),
+		StartTime:           w.metrics.StartTime,
+		LastRequestTime:     w.metrics.LastRequestTime,
+		MetadataFailures:    atomic.LoadInt64(&w.metrics.MetadataFailures),
+		ConsecutiveFailures: atomic.LoadInt32(&w.metrics.ConsecutiveFailures),
+		RacesLost:           atomic.LoadInt64(&w.metrics.RacesLost),
 	}
 }
 
@@ -124,11 +188,9 @@ func (w *Worker) GetAverageResponseTime() float64 {
 }
 
 type BotWorkers struct {
-	Bots     []*Worker
-	starting int
-	index    int
-	mut      sync.Mutex
-	log      *zap.Logger
+	Bots []*Worker
+	mut  sync.Mutex
+	log  *zap.Logger
 }
 
 var Workers *BotWorkers = &BotWorkers{
@@ -141,30 +203,28 @@ func (w *BotWorkers) Init(log *zap.Logger) {
 }
 
 func (w *BotWorkers) AddDefaultClient(client *gotgproto.Client, self *tg.User) {
-	if w.Bots == nil {
-		w.Bots = make([]*Worker, 0)
-	}
-	w.incStarting()
+	// The default bot gets a stable ID right after the worker tokens.
+	botID := len(config.ValueOf.MultiTokens) + 1
 	worker := &Worker{
 		Client: client,
-		ID:     w.starting,
+		ID:     botID,
 		Self:   self,
 		log:    w.log,
 	}
 	worker.metrics.StartTime = time.Now()
-	w.Bots = append(w.Bots, worker)
-	w.log.Sugar().Infof("Default bot loaded as Worker #%d: @%s", w.starting, self.Username)
-}
-
-func (w *BotWorkers) incStarting() {
 	w.mut.Lock()
-	defer w.mut.Unlock()
-	w.starting++
+	w.Bots = append(w.Bots, worker)
+	w.mut.Unlock()
+	w.log.Sugar().Infof("Default bot loaded as Worker #%d: @%s", botID, self.Username)
 }
 
-func (w *BotWorkers) Add(token string) (err error) {
-	w.incStarting()
-	var botID int = w.starting
+// Add starts a worker for the token at the given index and registers it.
+// The token index deterministically maps to both the worker ID (index+1) and
+// the session file (worker-{index+1}.session). This prevents the session-file
+// <-> token drift that previously let gotgproto resume a stale stored identity,
+// producing duplicate bots and unused tokens across restarts.
+func (w *BotWorkers) Add(token string, tokenIndex int) (err error) {
+	botID := tokenIndex + 1
 	client, err := startWorker(w.log, token, botID)
 	if err != nil {
 		return err
@@ -179,7 +239,9 @@ func (w *BotWorkers) Add(token string) (err error) {
 		log:    w.log,
 	}
 	worker.metrics.StartTime = time.Now()
+	w.mut.Lock()
 	w.Bots = append(w.Bots, worker)
+	w.mut.Unlock()
 	return nil
 }
 
@@ -207,8 +269,10 @@ func GetNextWorker() *Worker {
 
 		// Weight: Active requests are 10000x more important than total
 		// This ensures free workers are always chosen first
-		// But among free workers, distributes based on total usage
-		score := (activeReqs * 10000) + totalReqs
+		// But among free workers, distributes based on total usage.
+		// Degraded workers (recent metadata failures) get a penalty so they
+		// stop being preferred just for having a low total request count.
+		score := (activeReqs * 10000) + totalReqs + worker.unhealthyPenalty()
 
 		if score < minScore {
 			minScore = score
@@ -255,7 +319,7 @@ func GetNextWorkerExcluding(excludeIDs []int) *Worker {
 
 		activeReqs := float64(worker.GetActiveRequests())
 		totalReqs := float64(atomic.LoadInt64(&worker.metrics.TotalRequests))
-		score := (activeReqs * 10000) + totalReqs
+		score := (activeReqs * 10000) + totalReqs + worker.unhealthyPenalty()
 
 		if score < minScore {
 			minScore = score
@@ -336,7 +400,7 @@ func StartWorkers(log *zap.Logger) (*BotWorkers, error) {
 
 				done := make(chan error, 1)
 				go func() {
-					done <- Workers.Add(config.ValueOf.MultiTokens[idx])
+					done <- Workers.Add(config.ValueOf.MultiTokens[idx], idx)
 				}()
 
 				select {

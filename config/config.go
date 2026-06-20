@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -108,7 +109,7 @@ type config struct {
 	MultiTokens                 []string `ignored:"true"`
 }
 
-var botTokenRegex = regexp.MustCompile(`MULTI\_TOKEN\d+=(.*)`)
+var botTokenRegex = regexp.MustCompile(`^MULTI\_TOKEN(\d+)=(.*)$`)
 
 func (c *config) loadFromEnvFile(log *zap.Logger) {
 	envPath := filepath.Clean("fsb.env")
@@ -195,19 +196,36 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 
 func (c *config) loadMultiTokensFromEnv() {
 	c.MultiTokens = c.MultiTokens[:0]
+
+	type numberedToken struct {
+		num   int
+		token string
+	}
+	var toks []numberedToken
 	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "MULTI_TOKEN") {
-			continue
-		}
 		match := botTokenRegex.FindStringSubmatch(env)
-		if len(match) != 2 {
+		if len(match) != 3 {
 			continue
 		}
-		token := strings.TrimSpace(match[1])
+		num, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		token := strings.TrimSpace(match[2])
 		if token == "" {
 			continue
 		}
-		c.MultiTokens = append(c.MultiTokens, token)
+		toks = append(toks, numberedToken{num: num, token: token})
+	}
+
+	// Sort by the MULTI_TOKEN<N> suffix so the token order is deterministic
+	// across restarts (os.Environ() ordering is not guaranteed). This keeps the
+	// worker ID <-> session-file mapping stable, which prevents the duplicate
+	// bot identities / wasted tokens that arise when a token lands on a
+	// different worker-N.session between runs.
+	sort.Slice(toks, func(i, j int) bool { return toks[i].num < toks[j].num })
+	for _, t := range toks {
+		c.MultiTokens = append(c.MultiTokens, t.token)
 	}
 }
 
