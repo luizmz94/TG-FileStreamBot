@@ -41,6 +41,10 @@ const (
 	defaultDirectRaceWorkers         int    = 2
 )
 
+// defaultCORSAllowedDomains is empty by default; set CORS_ALLOWED_DOMAINS in the
+// env to allow browser origins (matched exactly or as a subdomain suffix).
+var defaultCORSAllowedDomains = []string{}
+
 var ValueOf = &config{
 	ApiID:                       defaultAPIID,
 	LogChannelID:                defaultLogChannelID,
@@ -61,6 +65,7 @@ var ValueOf = &config{
 	StreamSessionCookieSecure:   defaultStreamSessionCookieSec,
 	StreamSessionCookieDomain:   defaultStreamSessionCookieDomain,
 	DirectRaceWorkers:           defaultDirectRaceWorkers,
+	CORSAllowedDomains:          defaultCORSAllowedDomains,
 }
 
 type allowedUsers []int64
@@ -106,7 +111,12 @@ type config struct {
 	StreamSessionCookieSecure   bool     `envconfig:"STREAM_SESSION_COOKIE_SECURE" default:"true"`
 	StreamSessionCookieDomain   string   `envconfig:"STREAM_SESSION_COOKIE_DOMAIN" default:""`
 	DirectRaceWorkers           int      `envconfig:"DIRECT_RACE_WORKERS" default:"2"`
-	MultiTokens                 []string `ignored:"true"`
+	// CORSAllowedDomains: comma-separated list of hostnames allowed as browser
+	// origins (e.g. "example.com,cdn.example.com"). A request Origin matches when
+	// its host equals a listed domain or is a subdomain of it. localhost/127.0.0.1
+	// are always allowed for dev.
+	CORSAllowedDomains []string `envconfig:"CORS_ALLOWED_DOMAINS"`
+	MultiTokens        []string `ignored:"true"`
 }
 
 var botTokenRegex = regexp.MustCompile(`^MULTI\_TOKEN(\d+)=(.*)$`)

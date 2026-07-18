@@ -9,6 +9,8 @@ import (
 	"EverythingSuckz/fsb/internal/utils"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -80,6 +82,51 @@ func runApp(cmd *cobra.Command, args []string) {
 	}
 }
 
+// isAllowedOrigin libera qualquer host listado em CORS_ALLOWED_DOMAINS (incl.
+// seus subdomínios) e o localhost/127.0.0.1 (qualquer porta) para dev.
+func isAllowedOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := u.Hostname()
+	for _, d := range config.ValueOf.CORSAllowedDomains {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	if host == "localhost" || host == "127.0.0.1" {
+		return true
+	}
+	return false
+}
+
+// corsMiddleware libera origens configuradas (e localhost em dev) e responde
+// ao preflight OPTIONS. Necessário porque o fetch do exchange de token envia o
+// header Authorization, disparando preflight.
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin != "" && isAllowedOrigin(origin) {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Range, x-stream-token")
+			c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+		}
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
 func getRouter(log *zap.Logger) *gin.Engine {
 	if config.ValueOf.Dev {
 		gin.SetMode(gin.DebugMode)
@@ -97,6 +144,10 @@ func getRouter(log *zap.Logger) *gin.Engine {
 		router = gin.Default()
 		router.Use(gin.ErrorLogger())
 	}
+
+	// Enable CORS so browser clients (ex.: app Flutter web em localhost) possam
+	// chamar o exchange de token e as URLs de mídia cross-origin.
+	router.Use(corsMiddleware())
 
 	router.GET("/", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, types.RootResponse{
