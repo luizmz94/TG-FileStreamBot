@@ -33,7 +33,7 @@ const (
 	defaultUsePublicIP               bool   = false
 	defaultFirebaseProjectID         string = "application-16cbb"
 	defaultFirebaseCertsURL          string = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
-	defaultStreamSessionTTLSeconds   int    = 28800
+	defaultStreamSessionTTLSeconds   int    = 3600
 	defaultStreamSessionCleanupSecs  int    = 60
 	defaultStreamSessionCookieName   string = "fsb_stream_session"
 	defaultStreamSessionCookieSec    bool   = true
@@ -103,14 +103,14 @@ type config struct {
 	AllowedUsers              allowedUsers `envconfig:"ALLOWED_USERS"`
 	WorkerStartTimeoutSeconds int          `envconfig:"WORKER_START_TIMEOUT_SECONDS" default:"120"`
 	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
-	FirebaseProjectID           string   `envconfig:"FIREBASE_PROJECT_ID" default:"application-16cbb"`
-	FirebaseCertsURL            string   `envconfig:"FIREBASE_CERTS_URL" default:"https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"`
-	StreamSessionTTLSeconds     int      `envconfig:"STREAM_SESSION_TTL_SECONDS" default:"28800"` // 8h
-	StreamSessionCleanupSeconds int      `envconfig:"STREAM_SESSION_CLEANUP_SECONDS" default:"60"`
-	StreamSessionCookieName     string   `envconfig:"STREAM_SESSION_COOKIE_NAME" default:"fsb_stream_session"`
-	StreamSessionCookieSecure   bool     `envconfig:"STREAM_SESSION_COOKIE_SECURE" default:"true"`
-	StreamSessionCookieDomain   string   `envconfig:"STREAM_SESSION_COOKIE_DOMAIN" default:""`
-	DirectRaceWorkers           int      `envconfig:"DIRECT_RACE_WORKERS" default:"2"`
+	FirebaseProjectID           string `envconfig:"FIREBASE_PROJECT_ID" default:"application-16cbb"`
+	FirebaseCertsURL            string `envconfig:"FIREBASE_CERTS_URL" default:"https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"`
+	StreamSessionTTLSeconds     int    `envconfig:"STREAM_SESSION_TTL_SECONDS" default:"3600"` // 1h
+	StreamSessionCleanupSeconds int    `envconfig:"STREAM_SESSION_CLEANUP_SECONDS" default:"60"`
+	StreamSessionCookieName     string `envconfig:"STREAM_SESSION_COOKIE_NAME" default:"fsb_stream_session"`
+	StreamSessionCookieSecure   bool   `envconfig:"STREAM_SESSION_COOKIE_SECURE" default:"true"`
+	StreamSessionCookieDomain   string `envconfig:"STREAM_SESSION_COOKIE_DOMAIN" default:""`
+	DirectRaceWorkers           int    `envconfig:"DIRECT_RACE_WORKERS" default:"2"`
 	// CORSAllowedDomains: comma-separated list of hostnames allowed as browser
 	// origins (e.g. "example.com,cdn.example.com"). A request Origin matches when
 	// its host equals a listed domain or is a subdomain of it. localhost/127.0.0.1
