@@ -50,7 +50,7 @@ DEFAULT_MESSAGE_IDS = [
 # Provide via --firebase-api-key, FIREBASE_API_KEY env var, or interactive prompt.
 
 # Default URL shown at execution time (user can override interactively).
-DEFAULT_BASE_URL = "https://streamer.application.com"
+DEFAULT_BASE_URL = "http://localhost:8000"
 
 # Fixed benchmark profile (intentionally hardcoded for comparable runs).
 FIXED_CHUNK_SIZE = 1 * 1024 * 1024
@@ -1125,4 +1125,3 @@ Examples:
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -11,8 +11,9 @@ services:
       - /home/downloader/photos:/images
       - /home/downloader/sessions:/app/sessions
     networks:
-      - application
+      - backend
 
 networks:
-  application:
+  backend:
+    name: ${DOCKER_NETWORK_NAME:?DOCKER_NETWORK_NAME must be set}
     external: true

@@ -29,13 +29,14 @@ func Load(log *zap.Logger, r *gin.Engine) {
 	defer log.Sugar().Info("Loaded all API Routes")
 
 	streamAuthService, err := streamauth.NewService(log, streamauth.ServiceOptions{
-		FirebaseProjectID: config.ValueOf.FirebaseProjectID,
-		FirebaseCertsURL:  config.ValueOf.FirebaseCertsURL,
-		SessionTTL:        time.Duration(config.ValueOf.StreamSessionTTLSeconds) * time.Second,
-		CleanupInterval:   time.Duration(config.ValueOf.StreamSessionCleanupSeconds) * time.Second,
-		CookieName:        config.ValueOf.StreamSessionCookieName,
-		CookieSecure:      config.ValueOf.StreamSessionCookieSecure,
-		CookieDomain:      config.ValueOf.StreamSessionCookieDomain,
+		FirebaseProjectID:     config.ValueOf.FirebaseProjectID,
+		FirebaseCertsURL:      config.ValueOf.FirebaseCertsURL,
+		HasuraGraphQLEndpoint: config.ValueOf.HasuraGraphQLEndpoint,
+		SessionTTL:            time.Duration(config.ValueOf.StreamSessionTTLSeconds) * time.Second,
+		CleanupInterval:       time.Duration(config.ValueOf.StreamSessionCleanupSeconds) * time.Second,
+		CookieName:            config.ValueOf.StreamSessionCookieName,
+		CookieSecure:          config.ValueOf.StreamSessionCookieSecure,
+		CookieDomain:          config.ValueOf.StreamSessionCookieDomain,
 	})
 	if err != nil {
 		log.Fatal("Failed to initialize stream authentication", zap.Error(err))

@@ -46,6 +46,24 @@ func getFirebaseExchangeRoute(logger *zap.Logger, authService *streamauth.Servic
 			return
 		}
 
+		allowed, err := authService.UserCanStream(ctx.Request.Context(), bearerToken, claims.Subject)
+		if err != nil {
+			logger.Error("Hasura stream access validation failed",
+				zap.String("userID", claims.Subject),
+				zap.Error(err))
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "stream access validation unavailable",
+			})
+			return
+		}
+		if !allowed {
+			logger.Warn("Stream access denied", zap.String("userID", claims.Subject))
+			ctx.JSON(http.StatusForbidden, gin.H{
+				"error": "stream access denied",
+			})
+			return
+		}
+
 		sessionToken, expiresAt, err := authService.CreateSession(claims.Subject, claims.Email)
 		if err != nil {
 			logger.Error("Failed to create stream session", zap.Error(err))

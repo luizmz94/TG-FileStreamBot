@@ -8,13 +8,14 @@ import (
 )
 
 type ServiceOptions struct {
-	FirebaseProjectID string
-	FirebaseCertsURL  string
-	SessionTTL        time.Duration
-	CleanupInterval   time.Duration
-	CookieName        string
-	CookieSecure      bool
-	CookieDomain      string
+	FirebaseProjectID     string
+	FirebaseCertsURL      string
+	HasuraGraphQLEndpoint string
+	SessionTTL            time.Duration
+	CleanupInterval       time.Duration
+	CookieName            string
+	CookieSecure          bool
+	CookieDomain          string
 }
 
 type Service struct {
@@ -22,6 +23,7 @@ type Service struct {
 	log     *zap.Logger
 
 	verifier *firebaseVerifier
+	hasura   *hasuraAccessChecker
 	sessions *sessionStore
 
 	cookieName   string
@@ -51,8 +53,13 @@ func NewService(log *zap.Logger, opts ServiceOptions) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	hasura, err := newHasuraAccessChecker(opts.HasuraGraphQLEndpoint)
+	if err != nil {
+		return nil, err
+	}
 
 	svc.verifier = verifier
+	svc.hasura = hasura
 	svc.sessions = newSessionStore(log, opts.SessionTTL, opts.CleanupInterval)
 	svc.log.Info("Firebase stream auth enabled",
 		zap.String("projectID", opts.FirebaseProjectID),
@@ -79,6 +86,10 @@ func (s *Service) CookieDomain() string {
 
 func (s *Service) VerifyFirebaseToken(ctx context.Context, token string) (*FirebaseClaims, error) {
 	return s.verifier.VerifyToken(ctx, token)
+}
+
+func (s *Service) UserCanStream(ctx context.Context, firebaseToken, userID string) (bool, error) {
+	return s.hasura.UserCanStream(ctx, firebaseToken, userID)
 }
 
 func (s *Service) CreateSession(userID string, email string) (string, time.Time, error) {

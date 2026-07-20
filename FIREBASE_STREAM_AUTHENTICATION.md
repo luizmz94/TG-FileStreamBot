@@ -6,8 +6,10 @@ This project now supports a high-performance auth flow for `/direct/:message_id`
 2. The client sends the Firebase ID token once to:
    - `POST /auth/firebase/exchange`
    - Header: `Authorization: Bearer <firebase_id_token>`
-3. The stream server validates Firebase JWT and returns a short-lived `stream_token`.
-4. All subsequent `/direct/:message_id` requests use only the local `stream_token`:
+3. The stream server validates the Firebase JWT and uses that same bearer token
+   to confirm in Hasura that the user exists and is neither blocked nor deleted.
+4. The stream server returns a short-lived `stream_token` only for an active user.
+5. All subsequent `/direct/:message_id` requests use only the local `stream_token`:
    - Query: `?st=<stream_token>`
    - Header: `x-stream-token: <stream_token>`
    - Header: `Authorization: Bearer <stream_token>`
@@ -18,8 +20,9 @@ No Firebase verification happens on `/direct` requests.
 ## Environment variables
 
 ```env
-FIREBASE_PROJECT_ID=application-16cbb
+FIREBASE_PROJECT_ID=your-firebase-project-id
 FIREBASE_CERTS_URL=https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com
+HASURA_GRAPHQL_ENDPOINT=https://hasura.example.com/v1/graphql
 STREAM_SESSION_TTL_SECONDS=3600
 STREAM_SESSION_CLEANUP_SECONDS=60
 STREAM_SESSION_COOKIE_NAME=fsb_stream_session
@@ -50,6 +53,8 @@ curl "https://your-stream-host/direct/123?st=<stream_token>"
 ## Notes
 
 - Session tokens are stored in-memory (fast, O(1) lookup).
+- Missing, blocked, or deleted Hasura users cannot create or renew a stream session.
+- If Hasura cannot be reached during exchange, access is denied temporarily (fail closed).
 - Restarting the service invalidates active stream sessions.
 - For horizontal scaling, use a shared store (e.g. Redis) for session tokens.
 - In Docker production with a `scratch` runtime, CA certificates must be present or Firebase exchange can fail with:

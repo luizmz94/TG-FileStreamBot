@@ -31,7 +31,6 @@ const (
 	defaultHashLength                int    = 6
 	defaultUseSessionFile            bool   = true
 	defaultUsePublicIP               bool   = false
-	defaultFirebaseProjectID         string = "application-16cbb"
 	defaultFirebaseCertsURL          string = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
 	defaultStreamSessionTTLSeconds   int    = 3600
 	defaultStreamSessionCleanupSecs  int    = 60
@@ -57,7 +56,6 @@ var ValueOf = &config{
 	HashLength:                  defaultHashLength,
 	UseSessionFile:              defaultUseSessionFile,
 	UsePublicIP:                 defaultUsePublicIP,
-	FirebaseProjectID:           defaultFirebaseProjectID,
 	FirebaseCertsURL:            defaultFirebaseCertsURL,
 	StreamSessionTTLSeconds:     defaultStreamSessionTTLSeconds,
 	StreamSessionCleanupSeconds: defaultStreamSessionCleanupSecs,
@@ -103,8 +101,9 @@ type config struct {
 	AllowedUsers              allowedUsers `envconfig:"ALLOWED_USERS"`
 	WorkerStartTimeoutSeconds int          `envconfig:"WORKER_START_TIMEOUT_SECONDS" default:"120"`
 	// Firebase one-time auth configuration (exchange Firebase ID token to short-lived stream session token)
-	FirebaseProjectID           string `envconfig:"FIREBASE_PROJECT_ID" default:"application-16cbb"`
+	FirebaseProjectID           string `envconfig:"FIREBASE_PROJECT_ID" required:"true"`
 	FirebaseCertsURL            string `envconfig:"FIREBASE_CERTS_URL" default:"https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"`
+	HasuraGraphQLEndpoint       string `envconfig:"HASURA_GRAPHQL_ENDPOINT" required:"true"`
 	StreamSessionTTLSeconds     int    `envconfig:"STREAM_SESSION_TTL_SECONDS" default:"3600"` // 1h
 	StreamSessionCleanupSeconds int    `envconfig:"STREAM_SESSION_CLEANUP_SECONDS" default:"60"`
 	StreamSessionCookieName     string `envconfig:"STREAM_SESSION_COOKIE_NAME" default:"fsb_stream_session"`
