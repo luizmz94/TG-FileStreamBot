@@ -117,7 +117,12 @@ func (tf *ThumbnailFetcher) addToBuffer(messageID int, msg *tg.Message) {
 }
 
 func (tf *ThumbnailFetcher) getThumbnail(ctx context.Context, messageID int) (string, error) {
-	thumbFile := filepath.Join(tf.thumbDir, fmt.Sprintf("%d.jpg", messageID))
+	// Sufixo `_thumb` para nunca colidir com o cache de foto em tamanho
+	// completo do `/direct` (getDirectPhotoCachePath usa `{id}.jpg` no mesmo
+	// diretório) — antes das duas rotas terem o mesmo nome de arquivo, uma
+	// miniatura baixada aqui podia "vazar" e ser servida como se fosse a
+	// foto original em `/direct`.
+	thumbFile := filepath.Join(tf.thumbDir, fmt.Sprintf("%d_thumb.jpg", messageID))
 
 	// Check if thumbnail already exists
 	if _, err := os.Stat(thumbFile); err == nil {
@@ -131,52 +136,9 @@ func (tf *ThumbnailFetcher) getThumbnail(ctx context.Context, messageID int) (st
 		return "", err
 	}
 
-	// Check if media is a video document
-	media := msg.Media
-	var document *tg.Document
-
-	switch m := media.(type) {
-	case *tg.MessageMediaDocument:
-		doc, ok := m.Document.AsNotEmpty()
-		if !ok {
-			return "", fmt.Errorf("unsupported media type for thumbnail")
-		}
-		document = doc
-
-		// Verify it's a video
-		mime := strings.ToLower(document.MimeType)
-		if mime == "" || (!strings.HasPrefix(mime, "video/") && !strings.HasPrefix(mime, "image/")) {
-			return "", fmt.Errorf("unsupported media type for thumbnail: %s", document.MimeType)
-		}
-	default:
-		return "", fmt.Errorf("unsupported media type for thumbnail")
-	}
-
-	// Check if document has thumbs
-	if len(document.Thumbs) == 0 {
-		return "", fmt.Errorf("no thumbnail found in Telegram")
-	}
-
-	// Get the largest thumbnail (use the last one, which is usually the largest)
-	largestThumb := document.Thumbs[len(document.Thumbs)-1]
-
-	// Verify it's a valid thumbnail
-	if _, ok := largestThumb.AsNotEmpty(); !ok {
-		return "", fmt.Errorf("no valid thumbnail found")
-	}
-
-	// Get the type string from the thumbnail
-	thumbSize, ok := largestThumb.AsNotEmpty()
-	if !ok {
-		return "", fmt.Errorf("failed to get thumbnail type")
-	}
-
-	// Download thumbnail
-	location := &tg.InputDocumentFileLocation{
-		ID:            document.ID,
-		AccessHash:    document.AccessHash,
-		FileReference: document.FileReference,
-		ThumbSize:     thumbSize.GetType(),
+	location, err := thumbLocationFromMedia(msg.Media)
+	if err != nil {
+		return "", err
 	}
 
 	// Create temp file
@@ -235,6 +197,102 @@ func (tf *ThumbnailFetcher) getThumbnail(ctx context.Context, messageID int) (st
 
 	tf.logger.Debug("✅ Thumbnail saved", zap.String("file", thumbFile))
 	return thumbFile, nil
+}
+
+// thumbLocationFromMedia resolve o location de download da menor miniatura
+// disponível para a mídia da mensagem. Vídeos/arquivos (tg.MessageMediaDocument)
+// usam os `Thumbs` do documento; fotos nativas do Telegram (tg.MessageMediaPhoto,
+// que não têm `Thumbs` de documento) usam o menor tamanho baixável em `Sizes`.
+func thumbLocationFromMedia(media tg.MessageMediaClass) (tg.InputFileLocationClass, error) {
+	switch m := media.(type) {
+	case *tg.MessageMediaDocument:
+		document, ok := m.Document.AsNotEmpty()
+		if !ok {
+			return nil, fmt.Errorf("unsupported media type for thumbnail")
+		}
+
+		mime := strings.ToLower(document.MimeType)
+		if mime == "" || (!strings.HasPrefix(mime, "video/") && !strings.HasPrefix(mime, "image/")) {
+			return nil, fmt.Errorf("unsupported media type for thumbnail: %s", document.MimeType)
+		}
+
+		if len(document.Thumbs) == 0 {
+			return nil, fmt.Errorf("no thumbnail found in Telegram")
+		}
+
+		// Usa o último (o maior) thumb do documento, como antes.
+		largestThumb := document.Thumbs[len(document.Thumbs)-1]
+		thumbSize, ok := largestThumb.AsNotEmpty()
+		if !ok {
+			return nil, fmt.Errorf("no valid thumbnail found")
+		}
+
+		return &tg.InputDocumentFileLocation{
+			ID:            document.ID,
+			AccessHash:    document.AccessHash,
+			FileReference: document.FileReference,
+			ThumbSize:     thumbSize.GetType(),
+		}, nil
+
+	case *tg.MessageMediaPhoto:
+		photo, ok := m.Photo.AsNotEmpty()
+		if !ok {
+			return nil, fmt.Errorf("unsupported media type for thumbnail")
+		}
+
+		sizeType, ok := selectPhotoThumbSize(photo.Sizes)
+		if !ok {
+			return nil, fmt.Errorf("no thumbnail found in Telegram")
+		}
+
+		return &tg.InputPhotoFileLocation{
+			ID:            photo.GetID(),
+			AccessHash:    photo.GetAccessHash(),
+			FileReference: photo.GetFileReference(),
+			ThumbSize:     sizeType,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported media type for thumbnail")
+	}
+}
+
+// photoThumbTargetPx é o alvo mínimo (no maior lado) para o thumbnail de
+// foto. Um thumb pequeno demais (ex. o tamanho "s" do Telegram, ~100px) fica
+// visivelmente borrado num tile de grade em tela de alta densidade (DPR
+// 2x/3x, tile de ~150-250px lógicos → 300-750px físicos).
+const photoThumbTargetPx = 640
+
+// selectPhotoThumbSize retorna o tipo (campo `Type` do PhotoSize, ex. "s"/
+// "m"/"x") do menor tamanho realmente baixável via UploadGetFile
+// (tg.PhotoSize / tg.PhotoSizeProgressive) que atinja `photoThumbTargetPx` no
+// maior lado — grande o bastante pra não borrar na grade, mas ainda bem mais
+// leve que o arquivo original. Pula variantes sem download real:
+// tg.PhotoCachedSize e tg.PhotoStrippedSize só trazem bytes embutidos (preview
+// minúsculo de baixa qualidade) e tg.PhotoPathSize é um contorno vetorial, não
+// uma imagem raster. O array `Sizes` do Telegram vem em ordem crescente; se
+// nenhum tamanho atingir o alvo, cai pro maior disponível.
+func selectPhotoThumbSize(sizes []tg.PhotoSizeClass) (string, bool) {
+	var largestType string
+	found := false
+	for _, s := range sizes {
+		var typ string
+		var dim int
+		switch v := s.(type) {
+		case *tg.PhotoSize:
+			typ, dim = v.Type, max(v.W, v.H)
+		case *tg.PhotoSizeProgressive:
+			typ, dim = v.Type, max(v.W, v.H)
+		default:
+			continue
+		}
+		found = true
+		largestType = typ
+		if dim >= photoThumbTargetPx {
+			return typ, true
+		}
+	}
+	return largestType, found
 }
 
 // Global thumbnail fetcher instance
