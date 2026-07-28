@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-const maxHasuraResponseBytes = 1 << 20
+const (
+	maxHasuraResponseBytes = 1 << 20
+	maxHasuraAttempts      = 2
+	hasuraAttemptTimeout   = 3 * time.Second
+	hasuraRetryDelay       = 150 * time.Millisecond
+)
 
 type hasuraAccessChecker struct {
 	endpoint string
@@ -46,7 +51,7 @@ func newHasuraAccessChecker(endpoint string) (*hasuraAccessChecker, error) {
 	return &hasuraAccessChecker{
 		endpoint: endpoint,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: hasuraAttemptTimeout,
 		},
 	}, nil
 }
@@ -67,20 +72,54 @@ func (h *hasuraAccessChecker) UserCanStream(ctx context.Context, firebaseToken, 
 		return false, fmt.Errorf("encode Hasura request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return false, fmt.Errorf("create Hasura request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+firebaseToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	for attempt := 1; attempt <= maxHasuraAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return false, fmt.Errorf("create Hasura request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+firebaseToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
 
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("request Hasura: %w", err)
+		resp, err := h.client.Do(req)
+		if err != nil {
+			if attempt < maxHasuraAttempts && ctx.Err() == nil {
+				if err := waitForHasuraRetry(ctx); err != nil {
+					return false, fmt.Errorf("request Hasura: %w", err)
+				}
+				continue
+			}
+			return false, fmt.Errorf("request Hasura: %w", err)
+		}
+
+		if resp.StatusCode >= http.StatusInternalServerError && attempt < maxHasuraAttempts {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHasuraResponseBytes))
+			_ = resp.Body.Close()
+			if err := waitForHasuraRetry(ctx); err != nil {
+				return false, fmt.Errorf("request Hasura: %w", err)
+			}
+			continue
+		}
+
+		return parseHasuraAccessResponse(resp, expectedUID)
 	}
+
+	return false, errors.New("Hasura access validation attempts exhausted")
+}
+
+func waitForHasuraRetry(ctx context.Context) error {
+	timer := time.NewTimer(hasuraRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func parseHasuraAccessResponse(resp *http.Response, expectedUID string) (bool, error) {
 	defer resp.Body.Close()
-
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHasuraResponseBytes))
 		return false, fmt.Errorf("Hasura returned HTTP %d", resp.StatusCode)

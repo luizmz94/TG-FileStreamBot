@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -116,6 +117,34 @@ func TestHasuraAccessCheckerFailsClosed(t *testing.T) {
 				t.Fatal("access was allowed on validation error")
 			}
 		})
+	}
+}
+
+func TestHasuraAccessCheckerRetriesTransientFailure(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"users":[{"firebase_uid":"firebase-user-1","is_blocked":false,"is_deleted":false}]}}`))
+	}))
+	defer server.Close()
+
+	checker, err := newHasuraAccessChecker(server.URL)
+	if err != nil {
+		t.Fatalf("new checker: %v", err)
+	}
+	allowed, err := checker.UserCanStream(t.Context(), "firebase-token", "firebase-user-1")
+	if err != nil {
+		t.Fatalf("UserCanStream: %v", err)
+	}
+	if !allowed {
+		t.Fatal("access was denied after transient failure recovered")
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("requests = %d, want 2", got)
 	}
 }
 
