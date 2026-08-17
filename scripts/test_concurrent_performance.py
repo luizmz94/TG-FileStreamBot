@@ -849,6 +849,13 @@ Examples:
         help="Firebase Web API key. Falls back to FIREBASE_API_KEY env var.",
     )
     parser.add_argument(
+        "--firebase-id-token",
+        default=None,
+        help="ID token do Firebase já pronto. Dispensa API key, e-mail e senha "
+             "(útil para rodar sem interação em servidores). "
+             "Cai para a env FIREBASE_TOKEN.",
+    )
+    parser.add_argument(
         "--email",
         default=None,
         help="Firebase email (will prompt interactively if not provided).",
@@ -894,13 +901,20 @@ Examples:
         base_url = "http://" + base_url
     log("INFO", f"Target URL: {base_url}")
 
+    # Um ID token pronto dispensa API key + e-mail + senha. Necessário para
+    # rodar o benchmark de forma não-interativa em servidores — por exemplo,
+    # comparar a mesma carga a partir de datacenters diferentes.
+    preset_id_token = args.firebase_id_token or os.getenv("FIREBASE_TOKEN")
+
     # Resolve Firebase API key
-    firebase_api_key = args.firebase_api_key or os.getenv("FIREBASE_API_KEY")
-    if not firebase_api_key:
-        firebase_api_key = input("Firebase Web API Key: ").strip()
-    if not firebase_api_key:
-        log("ERROR", "Firebase API key is required.")
-        return 2
+    firebase_api_key = None
+    if not preset_id_token:
+        firebase_api_key = args.firebase_api_key or os.getenv("FIREBASE_API_KEY")
+        if not firebase_api_key:
+            firebase_api_key = input("Firebase Web API Key: ").strip()
+        if not firebase_api_key:
+            log("ERROR", "Firebase API key is required.")
+            return 2
 
     # Parse message IDs
     message_ids = [int(x.strip()) for x in args.messages.split(",") if x.strip()]
@@ -936,23 +950,27 @@ Examples:
     print("  FIREBASE AUTHENTICATION")
     print(hr("═"))
 
-    email = args.email
-    if not email:
-        email = input("Firebase Email: ").strip()
-    if not email:
-        log("ERROR", "Email is required.")
-        return 2
+    if preset_id_token:
+        log("AUTH", "Usando ID token pré-existente (sem login por e-mail/senha).")
+        firebase_token = preset_id_token
+    else:
+        email = args.email
+        if not email:
+            email = input("Firebase Email: ").strip()
+        if not email:
+            log("ERROR", "Email is required.")
+            return 2
 
-    password = getpass.getpass("Firebase Password: ")
-    if not password:
-        log("ERROR", "Password is required.")
-        return 2
+        password = getpass.getpass("Firebase Password: ")
+        if not password:
+            log("ERROR", "Password is required.")
+            return 2
 
-    try:
-        firebase_token = firebase_sign_in(firebase_api_key, email, password)
-    except Exception as e:
-        log("ERROR", f"Firebase sign-in failed: {e}")
-        return 1
+        try:
+            firebase_token = firebase_sign_in(firebase_api_key, email, password)
+        except Exception as e:
+            log("ERROR", f"Firebase sign-in failed: {e}")
+            return 1
 
     # ── Exchange for stream token ──
     try:
